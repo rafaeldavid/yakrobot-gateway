@@ -32,6 +32,7 @@ _ISSUER_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _PRICE_RE = re.compile(r"^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$")
 _STRIPE_KEY_RE = re.compile(r"^(sk|rk)_(test|live)_[A-Za-z0-9]+$")
 _CURRENCY_RE = re.compile(r"^[a-z]{3}$")
+_TAX_CODE_RE = re.compile(r"^txcd_[0-9]{8}$")
 
 _DEFAULT_PRICE_USDC = "1.00"
 _DEFAULT_LEASE_MINUTES = "5"
@@ -60,6 +61,8 @@ class StripeConfig:
     lease_minutes: int | None = None
     api_base: str | None = None
     livemode: bool | None = None  # derived from the key's _live_/_test_ segment
+    automatic_tax: bool = False  # Stripe Tax, tax-inclusive (price_cents includes it)
+    tax_code: str | None = None  # None: the account's default product tax code
 
 
 @dataclass(frozen=True)
@@ -191,6 +194,18 @@ def load_stripe_config() -> StripeConfig:
     api_base_raw = os.getenv("STRIPE_API_BASE", _DEFAULT_STRIPE_API_BASE)
     api_base = _validate_url("STRIPE_API_BASE", api_base_raw)
 
+    # Stripe Tax. Always tax-*inclusive*, so the buyer pays exactly STRIPE_PRICE_CENTS
+    # and confirm's amount_total check still holds; Stripe splits the tax out of it.
+    automatic_tax = os.getenv("STRIPE_AUTOMATIC_TAX", "").strip().lower() in _TRUTHY
+    tax_code = os.getenv("STRIPE_TAX_CODE", "").strip() or None
+    if tax_code is not None:
+        if not automatic_tax:
+            raise PaymentsConfigError("STRIPE_TAX_CODE needs STRIPE_AUTOMATIC_TAX=1")
+        if not _TAX_CODE_RE.match(tax_code):
+            raise PaymentsConfigError(
+                "STRIPE_TAX_CODE must be a Stripe tax code, e.g. txcd_10000000"
+            )
+
     lease_minutes = load_lease_minutes()
     livemode = "_live_" in key
 
@@ -202,6 +217,8 @@ def load_stripe_config() -> StripeConfig:
         lease_minutes=lease_minutes,
         api_base=api_base,
         livemode=livemode,
+        automatic_tax=automatic_tax,
+        tax_code=tax_code,
     )
 
 

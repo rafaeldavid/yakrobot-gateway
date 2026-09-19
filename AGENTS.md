@@ -228,7 +228,14 @@ Serving:
     drivers. Prefer a restricted `rk_` key plus Stripe's IP allowlist — a leaked live
     key can create charges and refunds. `STRIPE_PRICE_CENTS` (integer ≥ 50),
     `STRIPE_CURRENCY` (3-letter, default `usd`), `STRIPE_API_BASE` (default
-    `https://api.stripe.com`). Stripe is called only at `/{robot}/stripe/start` and
+    `https://api.stripe.com`). `STRIPE_AUTOMATIC_TAX=1` (default off) turns on Stripe
+    Tax, always tax-*inclusive*: the buyer pays exactly `STRIPE_PRICE_CENTS` and Stripe
+    splits the tax out of it — exclusive would change `amount_total` and fail confirm's
+    price check. It needs Stripe Tax set up in the dashboard (business address, tax
+    registrations), else `start` shows "unavailable" and logs Stripe's reason.
+    `STRIPE_TAX_CODE` (`txcd_` + 8 digits, optional, needs `STRIPE_AUTOMATIC_TAX=1`)
+    overrides the account's default product tax code. Registering with tax authorities
+    and filing returns stay the operator's job. Stripe is called only at `/{robot}/stripe/start` and
     `/{robot}/stripe/confirm`, never while admitting a socket (the credential verifies
     locally); the `session_id` sits in the confirm URL's query string, so it can land in
     uvicorn/tunnel access logs — the code logs only the robot and the id's last 6

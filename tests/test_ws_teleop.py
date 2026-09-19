@@ -101,6 +101,7 @@ _CLEARED_ENV_VARS = (
     "TELEOP_PRICE_USDC", "TELEOP_LEASE_MINUTES",
     "STRIPE_GATE_ENABLED", "STRIPE_SECRET_KEY", "STRIPE_PRICE_CENTS",
     "STRIPE_CURRENCY", "STRIPE_API_BASE",
+    "STRIPE_AUTOMATIC_TAX", "STRIPE_TAX_CODE",
 )
 
 
@@ -1165,6 +1166,31 @@ def test_stripe_start_redirects_to_checkout():
                 assert form["success_url"].endswith(
                     "/fakerobot_picar/stripe/confirm?session_id={CHECKOUT_SESSION_ID}"
                 )
+                assert "automatic_tax[enabled]" not in form  # Stripe Tax is opt-in
+
+    asyncio.run(run())
+
+
+def test_stripe_start_with_automatic_tax_is_inclusive():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            env = fake.env(STRIPE_AUTOMATIC_TAX="1", STRIPE_TAX_CODE="txcd_10000000")
+            async with _Stack(env=env):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                assert r.status_code == 303
+                form = fake.state.created_forms[-1]
+                assert form["automatic_tax[enabled]"] == "true"
+                # Inclusive: the buyer still pays exactly STRIPE_PRICE_CENTS, so the
+                # confirm step's amount_total check keeps holding.
+                assert form["line_items[0][price_data][tax_behavior]"] == "inclusive"
+                assert form["line_items[0][price_data][unit_amount]"] == "100"
+                assert form["line_items[0][price_data][product_data][tax_code]"] == "txcd_10000000"
 
     asyncio.run(run())
 

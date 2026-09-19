@@ -42,6 +42,7 @@ def _set(monkeypatch, **env):
         "TELEOP_PRICE_USDC", "TELEOP_LEASE_MINUTES",
         "STRIPE_GATE_ENABLED", "STRIPE_SECRET_KEY", "STRIPE_PRICE_CENTS",
         "STRIPE_CURRENCY", "STRIPE_API_BASE",
+        "STRIPE_AUTOMATIC_TAX", "STRIPE_TAX_CODE",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -336,6 +337,40 @@ def test_stripe_livemode_from_key(monkeypatch):
 
     _set(monkeypatch, **{**VALID_STRIPE, "STRIPE_SECRET_KEY": "rk_live_ABCDEFGH12345678"})
     assert load_stripe_config().livemode is True
+
+
+def test_stripe_automatic_tax_off_by_default(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE)
+    cfg = load_stripe_config()
+    assert cfg.automatic_tax is False
+    assert cfg.tax_code is None
+
+
+def test_stripe_automatic_tax_and_tax_code(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE, STRIPE_AUTOMATIC_TAX="1")
+    cfg = load_stripe_config()
+    assert cfg.automatic_tax is True
+    assert cfg.tax_code is None  # Stripe falls back to the account's default tax code
+
+    _set(monkeypatch, **VALID_STRIPE, STRIPE_AUTOMATIC_TAX="1", STRIPE_TAX_CODE="txcd_10000000")
+    assert load_stripe_config().tax_code == "txcd_10000000"
+
+    for code in ("10000000", "txcd_123", "txcd_1000000x"):
+        _set(monkeypatch, **VALID_STRIPE, STRIPE_AUTOMATIC_TAX="1", STRIPE_TAX_CODE=code)
+        try:
+            load_stripe_config()
+            raise AssertionError(f"expected rejection for tax code {code!r}")
+        except PaymentsConfigError as exc:
+            assert "STRIPE_TAX_CODE" in str(exc)
+
+
+def test_stripe_tax_code_needs_automatic_tax(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE, STRIPE_TAX_CODE="txcd_10000000")
+    try:
+        load_stripe_config()
+        raise AssertionError("expected PaymentsConfigError")
+    except PaymentsConfigError as exc:
+        assert "STRIPE_AUTOMATIC_TAX" in str(exc)
 
 
 def test_stripe_repr_hides_secret(monkeypatch):

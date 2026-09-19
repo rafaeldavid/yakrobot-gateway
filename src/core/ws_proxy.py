@@ -889,6 +889,12 @@ def register_ws_proxy(
             "success_url": f"{origin}/{robot}/stripe/confirm?session_id={{CHECKOUT_SESSION_ID}}",
             "cancel_url": f"{origin}/{robot}/ui",
         }
+        if stripe.automatic_tax:
+            # Inclusive, so amount_total stays price_cents and confirm's check holds.
+            form["automatic_tax[enabled]"] = "true"
+            form["line_items[0][price_data][tax_behavior]"] = "inclusive"
+            if stripe.tax_code:
+                form["line_items[0][price_data][product_data][tax_code]"] = stripe.tax_code
 
         import httpx
 
@@ -904,8 +910,16 @@ def register_ws_proxy(
             return _stripe_page(503, robot, "card payments are unavailable right now")
 
         if not 200 <= r.status_code < 300:
-            # Log the status, never the key.
-            logger.warning("ws proxy: stripe start for %s returned %d", robot, r.status_code)
+            # Log the status and Stripe's own message (e.g. Stripe Tax not set up) — never
+            # the key, which Stripe's error bodies don't echo.
+            try:
+                error = r.json().get("error") or {}
+                reason = error.get("message") or error.get("type")
+            except (ValueError, AttributeError):
+                reason = None
+            logger.warning(
+                "ws proxy: stripe start for %s returned %d: %s", robot, r.status_code, reason
+            )
             return _stripe_page(503, robot, "card payments are unavailable right now")
 
         try:
