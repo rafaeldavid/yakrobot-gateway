@@ -62,7 +62,9 @@ yakrobot-gateway/
   instance. Single port, single ngrok tunnel.
 - Endpoints: `/fleet/mcp` (local discovery only), `/{robot}/mcp` (control),
   `/{robot}/ui` (console), `/{robot}/ws/*` (realtime sockets),
-  `/{robot}/descriptor` (the descriptor JSON, live).
+  `/{robot}/descriptor` (the descriptor JSON, live),
+  `/{robot}/stripe/start` and `/{robot}/stripe/confirm` (card teleop checkout, when the
+  Stripe gate is enabled).
 - Every `/{robot}/mcp` tool passes through `ReservationMiddleware` — a robot reserved by
   one agent rejects control calls from others (identity = per-agent token `client_id`).
 - Plugin auto-discovery scans `src/plugins/` for `RobotPlugin` subclasses.
@@ -204,26 +206,42 @@ Serving:
 - `VIDEO_ENABLED` — (optional) set `0`/`false`/`no`/`off` to refuse `/ws/video` for every
   client, for a metered or congested link. Control keeps working: the car stays drivable,
   just blind. Absent means enabled.
-- Task auctions and Stripe payments live in `yakrobot-marketplace`, not here.
-- **Teleop admission is always one of two modes — paid or free — never neither.**
-  `PAYMENTS_ENABLED` (`0`/`1`, default `0`) picks which: set it for paid teleop; leave
-  it unset/`0` and free reservations are automatically on instead. There is no separate
-  toggle for free mode and no combination of both.
-  - **Paid teleop** (`PAYMENTS_ENABLED=1`): `PAYMENTS_URL` (the `yakrobot-payments`
+- Task auctions live in `yakrobot-marketplace`. Card-paid teleop is gated here, against
+  the operator's own Stripe account (below).
+- **Teleop admission is always gated one of two ways — paid or free — never neither.**
+  Paid means an x402 capability, a card-paid (Stripe) lease, or both; free is on only
+  when neither paid gate is enabled. `PAYMENTS_ENABLED` and `STRIPE_GATE_ENABLED` (both
+  `0`/`1`, default `0`) pick which. There is no separate free-mode toggle and no
+  combination of free with a paid gate.
+  - **Paid teleop (x402)** (`PAYMENTS_ENABLED=1`): `PAYMENTS_URL` (the `yakrobot-payments`
     service selling leases for this gateway), `PAYMENTS_ISSUER` (its signing key's
     address — capabilities are verified by recovering the signer, never by calling out
     to the service), `TELEOP_PRICE_USDC` (default `1.00`), `TELEOP_LEASE_MINUTES`
     (default `5`). The only call the gateway makes *to* the service is a best-effort
     `POST {PAYMENTS_URL}/v1/release` when a driver releases a lease early — never on
     the admission path.
-  - **Free teleop** (`PAYMENTS_ENABLED` unset/`0`): an unpaid, gateway-local "reserve"
-    click instead of a payment — `POST /{robot}/lease/reserve` grants exclusive control
-    for `TELEOP_LEASE_MINUTES` (shared with paid teleop, same default), and
+  - **Card teleop (Stripe)** (`STRIPE_GATE_ENABLED=1`): the operator's own Stripe account
+    sells card-paid leases; money settles in fiat to the operator, with no central
+    service and no chain. Needs `uv sync --extra stripe` (adds `httpx` only — raw REST,
+    no SDK). `STRIPE_SECRET_KEY` is a `sk_…` or restricted `rk_…` key; the card-lease
+    credential's HMAC key is derived from it, so rotating the key logs out active
+    drivers. Prefer a restricted `rk_` key plus Stripe's IP allowlist — a leaked live
+    key can create charges and refunds. `STRIPE_PRICE_CENTS` (integer ≥ 50),
+    `STRIPE_CURRENCY` (3-letter, default `usd`), `STRIPE_API_BASE` (default
+    `https://api.stripe.com`). Stripe is called only at `/{robot}/stripe/start` and
+    `/{robot}/stripe/confirm`, never while admitting a socket (the credential verifies
+    locally); the `session_id` sits in the confirm URL's query string, so it can land in
+    uvicorn/tunnel access logs — the code logs only the robot and the id's last 6
+    characters. No refunds from the gateway, ever: refunds and disputes are the
+    operator's job in the Stripe dashboard.
+  - **Free teleop** (neither gate enabled): an unpaid, gateway-local "reserve" click
+    instead of a payment — `POST /{robot}/lease/reserve` grants exclusive control for
+    `TELEOP_LEASE_MINUTES` (shared with paid teleop, same default), and
     `POST /{robot}/lease/release` frees it early. No signature, no external service —
     the token is only meaningful to this gateway's own memory, so a restart forgets
     every open reservation.
 
-  Both validated at startup and reported on the `/` index (`core.payments_config`).
+  All validated at startup and reported on the `/` index (`core.payments_config`).
   Full rules: `plans/paid-teleop-execution.md` §0.1 in the `pi-drg` planning repo.
 
 There are **no chain secrets** in this repo or in `yakrobot-identity`: registration and
@@ -233,13 +251,23 @@ task seems to need `SIGNER_PVT_KEY` or `PINATA_JWT` here, it is in the wrong rep
 to recover the signer of a paid-teleop capability and compare it to `PAYMENTS_ISSUER` — no
 RPC, no provider, no private key, so it does not violate the rule above.
 
+**Operator setup (card):**
+1. Create or choose a Stripe account.
+2. Create a restricted (`rk_`) key in **test mode** (the minimum permissions this gateway
+   needs are confirmed in the real-Stripe pilot, §G of the plan).
+3. Set `STRIPE_GATE_ENABLED=1`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_CENTS` (and
+   optionally `STRIPE_CURRENCY`/`STRIPE_API_BASE`), then `uv sync --extra stripe`.
+4. Run a test-mode purchase end to end (drive, release, re-buy).
+5. Only then switch to a live key.
+
 ## Development Guidelines
 
 - When adding a new robot, create a package under `src/plugins/` — see `src/plugins/_template/`
 - Robot adapter code is fully self-contained; do not put robot-specific logic in `src/core/`
 - Add robot-specific dependencies as optional extras in `pyproject.toml`
 - No framework code changes should be needed to add a new robot
-- This repo holds **no chain code**: on-chain concerns belong in `yakrobot-identity`
+- This repo holds **no chain code**: on-chain concerns belong in `yakrobot-identity`.
+  The `stripe` extra is plain HTTPS to Stripe — no chain, no RPC, no key material.
 - **Leave `fleet_provider` and `fleet_domain` empty in a plugin's `metadata()`.** A gateway
   cannot verify whose fleet it belongs to, so filling them in would put an unverified claim
   into the exported descriptor and from there on-chain. Whoever registers the robot supplies
