@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, quote, urlparse
 
 import pytest
 
@@ -1198,6 +1198,25 @@ def test_stripe_start_404_when_disabled():
                     follow_redirects=False,
                 )
             assert r.status_code == 404
+
+    asyncio.run(run())
+
+
+def test_stripe_page_escapes_robot_from_path():
+    async def run():
+        import httpx
+
+        async with _Stack(env=_stripe_env()):
+            payload = '"><img src=x onerror=alert(1)>'
+            async with httpx.AsyncClient() as client:
+                for endpoint in ("start", "confirm"):
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/{quote(payload, safe='')}/stripe/{endpoint}",
+                        follow_redirects=False,
+                    )
+                    assert r.status_code == 404
+                    assert payload not in r.text
+                    assert "<img" not in r.text
 
     asyncio.run(run())
 

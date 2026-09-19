@@ -141,11 +141,16 @@ def _public_origin(conn: HTTPConnection) -> str:
 
 
 def _stripe_page(status: int, robot: str, message: str) -> HTMLResponse:
-    """A small inline page for the buyer — raw JSON is the wrong shape for a browser."""
+    """A small inline page for the buyer — raw JSON is the wrong shape for a browser.
+
+    ``robot`` is the raw path segment, and the 404 branches reach here for *any* value,
+    so it is escaped everywhere it lands — the href included.
+    """
+    href = html.escape(f"/{quote(robot, safe='')}/ui", quote=True)
     body = (
         '<!doctype html><html><head><meta charset="utf-8"><title>Card payment</title></head>'
         f"<body><p>{html.escape(message)}</p>"
-        f'<p><a href="/{robot}/ui">Back to {html.escape(robot)}</a></p>'
+        f'<p><a href="{href}">Back to {html.escape(robot)}</a></p>'
         "</body></html>"
     )
     return HTMLResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
