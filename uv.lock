@@ -1697,6 +1697,9 @@ payments = [
 picar-freenove = [
     { name = "httpx" },
 ]
+stripe = [
+    { name = "httpx" },
+]
 tello = [
     { name = "djitellopy" },
 ]
@@ -1722,6 +1725,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'fakerobot-picar'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'payments'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'picar-freenove'", specifier = ">=0.28.1" },
+    { name = "httpx", marker = "extra == 'stripe'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'tumbller'", specifier = ">=0.28.1" },
     { name = "numpy", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=2.0" },
@@ -1738,4 +1742,4 @@ requires-dist = [
     { name = "yakrobot-descriptor", extras = ["model"], marker = "extra == 'dev'", editable = "../yakrobot-descriptor" },
     { name = "yakrobot-descriptor", extras = ["model"], marker = "extra == 'export'", editable = "../yakrobot-descriptor" },
 ]
-provides-extras = ["tumbller", "picar-freenove", "tello", "fakerobot", "fakerobot-picar", "export", "payments", "all", "dev"]
+provides-extras = ["tumbller", "picar-freenove", "tello", "fakerobot", "fakerobot-picar", "export", "payments", "stripe", "all", "dev"]

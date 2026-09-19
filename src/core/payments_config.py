@@ -1,4 +1,4 @@
-"""Read and validate paid-teleop and free-teleop configuration from the environment.
+"""Read and validate paid-teleop, Stripe and free-teleop configuration from the env.
 
 Configured per gateway, by its operator, in ``.env`` — see AGENTS.md and
 paid-teleop-execution.md §0.1, the authoritative source for every paid-teleop name,
@@ -8,10 +8,15 @@ at all while ``PAYMENTS_ENABLED`` is off. ``TELEOP_LEASE_MINUTES`` is the one ex
 it is validated **regardless** of ``PAYMENTS_ENABLED``, because free reservations always
 need it — see below.
 
+The Stripe fiat gate is a per-operator, per-gateway card path: an operator connects
+their own Stripe account and buyers pay by card, money settling to the operator in fiat.
+It is a sibling of paid teleop, not a replacement — see ``load_stripe_config``. When
+``STRIPE_GATE_ENABLED`` is off (the default), none of the ``STRIPE_*`` variables are read.
+
 Free reservations are the unpaid sibling: an explicit "reserve" click instead of a
 payment, same ``TELEOP_LEASE_MINUTES`` cap, no money or signature involved — and they
-are simply *whatever payments isn't*. There is no separate toggle and no "neither" state:
-every gateway runs one or the other. See ``load_free_teleop_config``.
+are simply *whatever neither paid gate is*. There is no separate toggle and no
+"neither" state: every gateway runs one of the three. See ``load_free_teleop_config``.
 
 Read at call time (the ``video_enabled()`` pattern in ``core.ws_proxy``), never cached at
 import, so tests and a running gateway both see live env changes.
@@ -19,19 +24,22 @@ import, so tests and a running gateway both see live env changes.
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _ISSUER_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _PRICE_RE = re.compile(r"^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$")
+_STRIPE_KEY_RE = re.compile(r"^(sk|rk)_(test|live)_[A-Za-z0-9]+$")
+_CURRENCY_RE = re.compile(r"^[a-z]{3}$")
 
 _DEFAULT_PRICE_USDC = "1.00"
 _DEFAULT_LEASE_MINUTES = "5"
+_DEFAULT_STRIPE_API_BASE = "https://api.stripe.com"
 
 
 class PaymentsConfigError(ValueError):
-    """A paid-teleop configuration variable is missing or invalid."""
+    """A paid-teleop or Stripe configuration variable is missing or invalid."""
 
 
 @dataclass(frozen=True)
@@ -44,6 +52,17 @@ class PaymentsConfig:
 
 
 @dataclass(frozen=True)
+class StripeConfig:
+    enabled: bool
+    secret_key: str | None = field(default=None, repr=False)
+    price_cents: int | None = None
+    currency: str | None = None
+    lease_minutes: int | None = None
+    api_base: str | None = None
+    livemode: bool | None = None  # derived from the key's _live_/_test_ segment
+
+
+@dataclass(frozen=True)
 class FreeTeleopConfig:
     enabled: bool
     lease_minutes: int | None = None
@@ -53,10 +72,10 @@ def _enabled() -> bool:
     return os.getenv("PAYMENTS_ENABLED", "").strip().lower() in _TRUTHY
 
 
-def _require(name: str) -> str:
+def _require(name: str, flag: str = "PAYMENTS_ENABLED") -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise PaymentsConfigError(f"{name} is required when PAYMENTS_ENABLED is set")
+        raise PaymentsConfigError(f"{name} is required when {flag} is set")
     return value
 
 
@@ -103,11 +122,11 @@ def _price_or_default() -> str:
 
 
 def load_lease_minutes() -> int:
-    """``TELEOP_LEASE_MINUTES``, validated, defaulted — shared by paid and free teleop.
+    """``TELEOP_LEASE_MINUTES``, validated, defaulted — shared by paid, Stripe and free.
 
-    Public (not ``_``-prefixed) because both modes read it independently of each other's
-    enabled state; ``load_payments_config`` and ``load_free_teleop_config`` each call
-    this rather than either owning it.
+    Public (not ``_``-prefixed) because all three modes read it independently of each
+    other's enabled state; ``load_payments_config``, ``load_stripe_config`` and
+    ``load_free_teleop_config`` each call this rather than any one owning it.
     """
     raw = os.environ.get("TELEOP_LEASE_MINUTES")
     return _validate_lease_minutes(
@@ -139,11 +158,63 @@ def load_payments_config() -> PaymentsConfig:
     )
 
 
-def load_free_teleop_config(payments: PaymentsConfig) -> FreeTeleopConfig:
-    """Free reservations are the default whenever payments are off — no separate
-    toggle, no fully-open fallback. Validates the shared ``TELEOP_LEASE_MINUTES``.
+def load_stripe_config() -> StripeConfig:
+    """Read and validate the STRIPE_GATE_*/STRIPE_* variables.
+
+    Raises ``PaymentsConfigError``, naming the offending variable, on any missing or
+    invalid value when ``STRIPE_GATE_ENABLED`` is truthy. When it is not, returns
+    ``StripeConfig(enabled=False)`` without reading (or validating) anything else. The
+    secret key's value is never echoed in an error message.
     """
-    if payments.enabled:
+    if os.getenv("STRIPE_GATE_ENABLED", "").strip().lower() not in _TRUTHY:
+        return StripeConfig(enabled=False)
+
+    key = _require("STRIPE_SECRET_KEY", flag="STRIPE_GATE_ENABLED")
+    if not _STRIPE_KEY_RE.match(key):
+        raise PaymentsConfigError(
+            "STRIPE_SECRET_KEY must match ^(sk|rk)_(test|live)_[A-Za-z0-9]+$"
+        )
+
+    price_raw = _require("STRIPE_PRICE_CENTS", flag="STRIPE_GATE_ENABLED")
+    if not price_raw.isdigit() or int(price_raw) < 50:
+        raise PaymentsConfigError(
+            "STRIPE_PRICE_CENTS must be an integer of at least 50 "
+            "(Stripe's USD minimum)"
+        )
+    price_cents = int(price_raw)
+
+    currency_raw = os.getenv("STRIPE_CURRENCY", "usd").strip().lower()
+    if not _CURRENCY_RE.match(currency_raw):
+        raise PaymentsConfigError("STRIPE_CURRENCY must be a 3-letter code, e.g. usd")
+    currency = currency_raw
+
+    api_base_raw = os.getenv("STRIPE_API_BASE", _DEFAULT_STRIPE_API_BASE)
+    api_base = _validate_url("STRIPE_API_BASE", api_base_raw)
+
+    lease_minutes = load_lease_minutes()
+    livemode = "_live_" in key
+
+    return StripeConfig(
+        enabled=True,
+        secret_key=key,
+        price_cents=price_cents,
+        currency=currency,
+        lease_minutes=lease_minutes,
+        api_base=api_base,
+        livemode=livemode,
+    )
+
+
+def load_free_teleop_config(
+    payments: PaymentsConfig, stripe: StripeConfig
+) -> FreeTeleopConfig:
+    """Free reservations are the default whenever neither paid gate is on — no separate
+    toggle, no fully-open fallback. Validates the shared ``TELEOP_LEASE_MINUTES``.
+
+    ``stripe`` is required with no default so a caller that forgets it fails loudly
+    instead of quietly turning free mode on next to a Stripe gate.
+    """
+    if payments.enabled or stripe.enabled:
         return FreeTeleopConfig(enabled=False)
     return FreeTeleopConfig(enabled=True, lease_minutes=load_lease_minutes())
 
@@ -160,13 +231,31 @@ def index_summary(cfg: PaymentsConfig) -> dict:
     }
 
 
-def teleop_summary(payments: PaymentsConfig, free: FreeTeleopConfig) -> dict:
+def stripe_summary(cfg: StripeConfig) -> dict:
+    """The ``stripe`` object reported on ``GET /`` (decision A.8)."""
+    if not cfg.enabled:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "price_cents": cfg.price_cents,
+        "currency": cfg.currency,
+        "lease_minutes": cfg.lease_minutes,
+    }
+
+
+def teleop_summary(
+    payments: PaymentsConfig, free: FreeTeleopConfig, stripe: StripeConfig
+) -> dict:
     """The top-level ``teleop`` object reported on ``GET /`` — a sibling of ``payments``
-    (which stays ``{"enabled": false}`` in free mode) so the console can tell "none,"
-    "free," and "paid" apart with one read.
+    and ``stripe`` so the console can tell "none," "free," and "paid" apart with one
+    read. "paid" is reported when either paid gate is on, with ``lease_minutes`` taken
+    from whichever gate is enabled (both read the same env var).
     """
-    if payments.enabled:
-        return {"reservation": "paid", "lease_minutes": payments.lease_minutes}
+    if payments.enabled or stripe.enabled:
+        lease_minutes = (
+            payments.lease_minutes if payments.enabled else stripe.lease_minutes
+        )
+        return {"reservation": "paid", "lease_minutes": lease_minutes}
     if free.enabled:
         return {"reservation": "free", "lease_minutes": free.lease_minutes}
     return {"reservation": "none", "lease_minutes": None}

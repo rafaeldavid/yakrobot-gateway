@@ -14,9 +14,12 @@ from core.payments_config import (  # noqa: E402
     FreeTeleopConfig,
     PaymentsConfig,
     PaymentsConfigError,
+    StripeConfig,
     index_summary,
     load_free_teleop_config,
     load_payments_config,
+    load_stripe_config,
+    stripe_summary,
     teleop_summary,
 )
 
@@ -26,11 +29,19 @@ VALID = {
     "PAYMENTS_ISSUER": "0xF39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
 }
 
+VALID_STRIPE = {
+    "STRIPE_GATE_ENABLED": "1",
+    "STRIPE_SECRET_KEY": "sk_test_51abcdefghijk",
+    "STRIPE_PRICE_CENTS": "100",
+}
+
 
 def _set(monkeypatch, **env):
     for key in (
         "PAYMENTS_ENABLED", "PAYMENTS_URL", "PAYMENTS_ISSUER",
         "TELEOP_PRICE_USDC", "TELEOP_LEASE_MINUTES",
+        "STRIPE_GATE_ENABLED", "STRIPE_SECRET_KEY", "STRIPE_PRICE_CENTS",
+        "STRIPE_CURRENCY", "STRIPE_API_BASE",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -153,29 +164,37 @@ def test_index_summary_shapes(monkeypatch):
 
 
 def test_free_teleop_enabled_by_default():
-    """No separate toggle: free reservations are on whenever payments are off."""
-    cfg = load_free_teleop_config(PaymentsConfig(enabled=False))
+    """No separate toggle: free reservations are on whenever no paid gate is on."""
+    cfg = load_free_teleop_config(
+        PaymentsConfig(enabled=False), StripeConfig(enabled=False)
+    )
     assert cfg.enabled is True
     assert cfg.lease_minutes == 5  # the shared TELEOP_LEASE_MINUTES default
 
 
 def test_free_teleop_reads_shared_lease_minutes(monkeypatch):
     _set(monkeypatch, TELEOP_LEASE_MINUTES="30")
-    cfg = load_free_teleop_config(PaymentsConfig(enabled=False))
+    cfg = load_free_teleop_config(
+        PaymentsConfig(enabled=False), StripeConfig(enabled=False)
+    )
     assert cfg.lease_minutes == 30
 
 
 def test_free_teleop_rejects_bad_lease_minutes(monkeypatch):
     _set(monkeypatch, TELEOP_LEASE_MINUTES="0")
     try:
-        load_free_teleop_config(PaymentsConfig(enabled=False))
+        load_free_teleop_config(
+            PaymentsConfig(enabled=False), StripeConfig(enabled=False)
+        )
         raise AssertionError("expected PaymentsConfigError")
     except PaymentsConfigError as exc:
         assert "TELEOP_LEASE_MINUTES" in str(exc)
 
 
 def test_free_teleop_disabled_when_payments_enabled():
-    cfg = load_free_teleop_config(PaymentsConfig(enabled=True))
+    cfg = load_free_teleop_config(
+        PaymentsConfig(enabled=True), StripeConfig(enabled=False)
+    )
     assert cfg.enabled is False
     assert cfg.lease_minutes is None
 
@@ -185,11 +204,170 @@ def test_teleop_summary_shapes():
     paid = PaymentsConfig(enabled=True, lease_minutes=5)
     free_off = FreeTeleopConfig(enabled=False)
     free_on = FreeTeleopConfig(enabled=True, lease_minutes=10)
+    stripe_off = StripeConfig(enabled=False)
 
-    assert teleop_summary(off, free_off) == {"reservation": "none", "lease_minutes": None}
-    assert teleop_summary(off, free_on) == {"reservation": "free", "lease_minutes": 10}
-    assert teleop_summary(paid, free_off) == {"reservation": "paid", "lease_minutes": 5}
+    assert teleop_summary(off, free_off, stripe_off) == {
+        "reservation": "none", "lease_minutes": None,
+    }
+    assert teleop_summary(off, free_on, stripe_off) == {
+        "reservation": "free", "lease_minutes": 10,
+    }
+    assert teleop_summary(paid, free_off, stripe_off) == {
+        "reservation": "paid", "lease_minutes": 5,
+    }
     # Paid takes precedence in the (unreachable in practice — load_free_teleop_config
-    # only ever constructs free_on when payments.enabled is False) case both configs
+    # only ever constructs free_on when neither gate is enabled) case both configs
     # claim to be enabled.
-    assert teleop_summary(paid, free_on) == {"reservation": "paid", "lease_minutes": 5}
+    assert teleop_summary(paid, free_on, stripe_off) == {
+        "reservation": "paid", "lease_minutes": 5,
+    }
+
+
+# --- Stripe gate ---------------------------------------------------------------
+
+
+def test_stripe_disabled_by_default(monkeypatch):
+    _set(monkeypatch)
+    cfg = load_stripe_config()
+    assert cfg.enabled is False
+    assert cfg.secret_key is None
+    assert cfg.price_cents is None
+    assert cfg.currency is None
+    assert cfg.lease_minutes is None
+    assert cfg.api_base is None
+    assert cfg.livemode is None
+
+
+def test_stripe_disabled_ignores_invalid_other_vars(monkeypatch):
+    _set(
+        monkeypatch,
+        STRIPE_SECRET_KEY="not a key",
+        STRIPE_PRICE_CENTS="abc",
+        STRIPE_CURRENCY="USDOLLARS",
+        STRIPE_API_BASE="not a url",
+    )
+    cfg = load_stripe_config()
+    assert cfg.enabled is False
+
+
+def test_stripe_requires_key_and_price(monkeypatch):
+    _set(monkeypatch, STRIPE_GATE_ENABLED="1")
+    try:
+        load_stripe_config()
+        raise AssertionError("expected PaymentsConfigError")
+    except PaymentsConfigError as exc:
+        assert "STRIPE_SECRET_KEY" in str(exc)
+
+    _set(monkeypatch, STRIPE_GATE_ENABLED="1", STRIPE_SECRET_KEY="sk_test_51abcdefghijk")
+    try:
+        load_stripe_config()
+        raise AssertionError("expected PaymentsConfigError")
+    except PaymentsConfigError as exc:
+        assert "STRIPE_PRICE_CENTS" in str(exc)
+
+
+def test_stripe_key_format(monkeypatch):
+    for key in ("sk_test_51abcdefghijk", "rk_live_ABCDEFGH12345678"):
+        _set(monkeypatch, STRIPE_GATE_ENABLED="1", STRIPE_SECRET_KEY=key, STRIPE_PRICE_CENTS="100")
+        assert load_stripe_config().enabled is True
+
+    for key in ("pk_test_51abcdefghijk", "sk_test_", "sk_", "totally wrong"):
+        _set(monkeypatch, STRIPE_GATE_ENABLED="1", STRIPE_SECRET_KEY=key, STRIPE_PRICE_CENTS="100")
+        try:
+            load_stripe_config()
+            raise AssertionError(f"expected rejection for key {key!r}")
+        except PaymentsConfigError as exc:
+            assert "STRIPE_SECRET_KEY" in str(exc)
+            assert key not in str(exc)  # the rejected value must never be echoed
+
+
+def test_stripe_price_floor(monkeypatch):
+    for cents in ("49", "abc", "-5", "0"):
+        _set(monkeypatch, STRIPE_GATE_ENABLED="1", STRIPE_SECRET_KEY="sk_test_51abcdefghijk",
+             STRIPE_PRICE_CENTS=cents)
+        try:
+            load_stripe_config()
+            raise AssertionError(f"expected rejection for price {cents!r}")
+        except PaymentsConfigError as exc:
+            assert "STRIPE_PRICE_CENTS" in str(exc)
+
+    for cents in ("50", "100", "999999"):
+        _set(monkeypatch, STRIPE_GATE_ENABLED="1", STRIPE_SECRET_KEY="sk_test_51abcdefghijk",
+             STRIPE_PRICE_CENTS=cents)
+        assert load_stripe_config().price_cents == int(cents)
+
+
+def test_stripe_currency_default_and_validation(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE)
+    assert load_stripe_config().currency == "usd"
+
+    _set(monkeypatch, **VALID_STRIPE, STRIPE_CURRENCY="EUR")
+    assert load_stripe_config().currency == "eur"
+
+    for currency in ("USDOLLARS", "eu", "12"):
+        _set(monkeypatch, **VALID_STRIPE, STRIPE_CURRENCY=currency)
+        try:
+            load_stripe_config()
+            raise AssertionError(f"expected rejection for currency {currency!r}")
+        except PaymentsConfigError as exc:
+            assert "STRIPE_CURRENCY" in str(exc)
+
+
+def test_stripe_api_base_https_or_localhost(monkeypatch):
+    for url in (
+        "https://api.stripe.com/",
+        "http://127.0.0.1:8193",
+        "http://localhost:3000",
+    ):
+        _set(monkeypatch, **VALID_STRIPE, STRIPE_API_BASE=url)
+        assert load_stripe_config().api_base == url.rstrip("/")
+
+    _set(monkeypatch, **VALID_STRIPE, STRIPE_API_BASE="http://evil.example.com")
+    try:
+        load_stripe_config()
+        raise AssertionError("expected PaymentsConfigError")
+    except PaymentsConfigError as exc:
+        assert "STRIPE_API_BASE" in str(exc)
+
+
+def test_stripe_livemode_from_key(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE)
+    assert load_stripe_config().livemode is False
+
+    _set(monkeypatch, **{**VALID_STRIPE, "STRIPE_SECRET_KEY": "rk_live_ABCDEFGH12345678"})
+    assert load_stripe_config().livemode is True
+
+
+def test_stripe_repr_hides_secret(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE)
+    cfg = load_stripe_config()
+    assert "sk_test_51abcdefghijk" not in repr(cfg)
+
+
+def test_free_teleop_off_when_stripe_on(monkeypatch):
+    _set(monkeypatch, **VALID_STRIPE)
+    stripe = load_stripe_config()
+    cfg = load_free_teleop_config(PaymentsConfig(enabled=False), stripe)
+    assert cfg.enabled is False
+    assert cfg.lease_minutes is None
+
+
+def test_teleop_summary_paid_when_only_stripe():
+    off = PaymentsConfig(enabled=False)
+    stripe = StripeConfig(enabled=True, lease_minutes=7)
+    free_off = FreeTeleopConfig(enabled=False)
+    assert teleop_summary(off, free_off, stripe) == {
+        "reservation": "paid", "lease_minutes": 7,
+    }
+
+
+def test_stripe_summary_shapes():
+    assert stripe_summary(StripeConfig(enabled=False)) == {"enabled": False}
+
+    cfg = StripeConfig(enabled=True, price_cents=150, currency="usd", lease_minutes=5)
+    assert stripe_summary(cfg) == {
+        "enabled": True,
+        "price_cents": 150,
+        "currency": "usd",
+        "lease_minutes": 5,
+    }
