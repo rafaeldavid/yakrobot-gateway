@@ -43,31 +43,43 @@ safety model that lives on the robot:
    arbiter, shared with MCP agents — not invented fresh. A free reservation is the same
    decision again, minus any money or signature — an unpaid, gateway-local,
    restart-amnesiac ``free_leases`` dict stands in for the capability, driving the same
-   registry hold, expiry and release machinery. The brief reachability cache below is a
+   registry hold, expiry and release machinery. A card-paid (Stripe) lease is the same
+   decision once more: it is verified once against Stripe at confirm, then carried by a
+   locally verified HMAC credential, and the gateway stores no commercial record. The
+   brief reachability cache below is a
    fourth, narrower thing again: it remembers only that a connect just failed, which
    changes how quickly a refusal is returned, never what the robot is permitted to do.
 """
 
 import asyncio
 import base64
+import html
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
 from dataclasses import dataclass
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 import websockets
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocket
 
 from core.capability import CapabilityError, Claims, normalize_host, verify
 from core.descriptor_route import _public_domain
 from core.plugin import RobotPlugin
+from core.stripe_credential import (
+    StripeClaims,
+    derive_key,
+    is_stripe_credential,
+    mint as mint_stripe,
+    verify as verify_stripe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +109,46 @@ RESERVATION_RENEW_S = 60.0
 # client-minted exp=now+2 trick like the paid path's expiry test uses), so exercising a
 # real expiry here would otherwise mean sleeping out a full TELEOP_LEASE_MINUTES.
 SECONDS_PER_LEASE_MINUTE = 60
+
+# Stripe API version pinned on every call, so response shapes stay fixed (decision A.7).
+STRIPE_API_VERSION = "2024-06-20"
+
+# How long a Stripe REST call may take before the gateway gives up and shows the buyer a
+# retry page. Mirrors LEDGER_RELEASE_TIMEOUT_S below.
+STRIPE_TIMEOUT_S = 5.0
+
+# Checkout Session ids are cs_(test|live)_…; validating this before building the Stripe
+# URL blocks path injection into the retrieve endpoint.
+_SESSION_ID_RE = re.compile(r"^cs_(test|live)_[A-Za-z0-9]+$")
+
+
+def _stripe_headers(cfg) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {cfg.secret_key}",
+        "Stripe-Version": STRIPE_API_VERSION,
+    }
+
+
+def _public_origin(conn: HTTPConnection) -> str:
+    """The browser-facing origin for success/cancel URLs.
+
+    Tunnels terminate TLS, so ``request.url.scheme`` is wrong behind them — derive the
+    scheme from the resolved public domain instead: http on loopback, https otherwise.
+    """
+    domain = _public_domain(conn)
+    scheme = "http" if domain.startswith(("127.0.0.1", "localhost")) else "https"
+    return f"{scheme}://{domain}"
+
+
+def _stripe_page(status: int, robot: str, message: str) -> HTMLResponse:
+    """A small inline page for the buyer — raw JSON is the wrong shape for a browser."""
+    body = (
+        '<!doctype html><html><head><meta charset="utf-8"><title>Card payment</title></head>'
+        f"<body><p>{html.escape(message)}</p>"
+        f'<p><a href="/{robot}/ui">Back to {html.escape(robot)}</a></p>'
+        "</body></html>"
+    )
+    return HTMLResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
 
 def _ws_url(base_url: str, path: str, query: str) -> str:
@@ -391,6 +443,7 @@ def register_ws_proxy(
     reachability,
     payments,
     free,
+    stripe,
 ) -> None:
     """Add ``/{robot}/ws/{path}`` to the gateway.
 
@@ -440,6 +493,16 @@ def register_ws_proxy(
     # FreeLease). Empty and unused unless `free.enabled`.
     free_leases: dict[str, FreeLease] = {}
 
+    # The HMAC key for card-paid credentials, derived from the operator's Stripe secret
+    # (decision A.3) — so credentials verify locally and survive a restart. None unless
+    # `stripe.enabled`, and never touched otherwise.
+    stripe_key = derive_key(stripe.secret_key) if stripe.enabled else None
+
+    # Session id -> (robot, exp): an idempotency cache so refreshing the confirm URL
+    # doesn't call Stripe again. NOT a blocklist — re-presenting the same session id is
+    # a reconnect, not a replay. Pruned of expired entries on each confirm.
+    confirmed_sessions: dict[str, tuple[str, int]] = {}
+
     @app.websocket("/{robot}/ws/{path:path}")
     async def robot_ws_proxy(ws: WebSocket, robot: str, path: str):
         entry = proxied.get(robot)
@@ -467,9 +530,10 @@ def register_ws_proxy(
         release_client_id: str | None = None
         lease_key: tuple[str, str] | None = None
 
-        if payments.enabled:
-            # paid-teleop-execution.md §0.5, in order. Every branch below either admits
-            # (falling through to gateway_auth = True) or refuses and returns.
+        if payments.enabled or stripe.enabled:
+            # A paid gate — x402 capability, card-paid HMAC credential, or both — in
+            # order. Every branch below either admits (falling through to
+            # gateway_auth = True) or refuses and returns.
             supplied = dict(parse_qsl(ws.url.query, keep_blank_values=True)).get("token", "")
             if not supplied:
                 await _refuse(ws, 1008, "payment required")
@@ -484,7 +548,36 @@ def register_ws_proxy(
                 if not admitted:
                     await _refuse(ws, 1008, "robot is held by another session")
                     return
-            else:
+            elif stripe.enabled and is_stripe_credential(supplied):
+                # Card-paid: verified locally against the derived key, never against
+                # Stripe (Stripe is called only at start/confirm, never while admitting
+                # a socket). The credential was minted at confirm with this gateway's
+                # domain, so robot/gateway/exp are checked inside verify().
+                now = int(time.time())
+                try:
+                    claims = verify_stripe(
+                        supplied,
+                        stripe_key,
+                        robot=robot,
+                        gateway=_public_domain(ws),
+                        lease_minutes=stripe.lease_minutes,
+                        now=now,
+                    )
+                except CapabilityError as exc:
+                    await _refuse(ws, 1008, str(exc))
+                    return
+                holder = f"stripe:{claims.lease}"
+                if released_leases.get(holder, 0) > now:
+                    await _refuse(ws, 1008, "lease released")
+                    return
+                if not registry.reserve(robot, holder, ttl=claims.exp - now):
+                    await _refuse(ws, 1008, "robot is held by another session")
+                    return
+                expiry_at = claims.exp
+                lease_key = (robot, holder)
+            elif payments.enabled:
+                # paid-teleop-execution.md §0.5, in order (unchanged from before the
+                # Stripe gate existed).
                 now = int(time.time())
                 try:
                     claims = _verify_lease(supplied, robot, ws, payments, now)
@@ -503,6 +596,9 @@ def register_ws_proxy(
                     return
                 expiry_at = claims.exp
                 lease_key = (robot, holder)
+            else:
+                await _refuse(ws, 1008, "invalid lease")
+                return
 
             gateway_auth = True
         else:
@@ -645,21 +741,22 @@ def register_ws_proxy(
 
     @app.post("/{robot}/lease/release")
     async def release_lease(request: Request, robot: str) -> dict:
-        """Voluntarily give up a lease before it expires — paid or free, whichever
-        mode this gateway is running.
+        """Voluntarily give up a lease before it expires — paid (x402 or card), or free.
 
-        Never refunds — for a paid lease, settlement is a direct wallet-to-owner
+        Never refunds — for an x402 lease, settlement is a direct wallet-to-owner
         transfer with no escrow (paid-teleop-access.md §4.2), so there is no key
-        anywhere that could claw money back; a free lease never took any money to begin
-        with. Either way this only frees the *robot* early: the reservation is released
-        so the next person does not wait out someone else's unused time, and this
-        session's own live sockets (if any) are force-closed so the page's "released"
-        state and the car's actual drivability agree, instead of a stale socket quietly
-        outliving the paywall/reserve card the console shows after this call.
+        anywhere that could claw money back; a card lease *could* be refunded through
+        Stripe but v1 deliberately never does (refunds and disputes are the operator's
+        job in the Stripe dashboard); a free lease never took any money to begin with.
+        Either way this only frees the *robot* early: the reservation is released so the
+        next person does not wait out someone else's unused time, and this session's own
+        live sockets (if any) are force-closed so the page's "released" state and the
+        car's actual drivability agree, instead of a stale socket quietly outliving the
+        paywall/reserve card the console shows after this call.
         """
         if robot not in proxied:
             raise HTTPException(status_code=404, detail=f"no realtime socket for {robot!r}")
-        if not payments.enabled and not free.enabled:
+        if not payments.enabled and not stripe.enabled and not free.enabled:
             raise HTTPException(
                 status_code=404, detail="teleop reservations are not enabled on this gateway"
             )
@@ -670,6 +767,29 @@ def register_ws_proxy(
             raise HTTPException(status_code=400, detail="token is required")
 
         now = int(time.time())
+
+        if stripe.enabled and is_stripe_credential(token):
+            try:
+                claims = verify_stripe(
+                    token,
+                    stripe_key,
+                    robot=robot,
+                    gateway=_public_domain(request),
+                    lease_minutes=stripe.lease_minutes,
+                    now=now,
+                )
+            except CapabilityError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            holder = f"stripe:{claims.lease}"
+            for stale_holder, exp in list(released_leases.items()):
+                if exp <= now:
+                    del released_leases[stale_holder]
+            released_leases[holder] = claims.exp
+            confirmed_sessions.pop(claims.lease, None)
+            registry.release(robot, holder)
+            await _force_close_lease_sockets(robot, holder)
+            return {"released": True}
 
         if payments.enabled:
             try:
@@ -735,3 +855,176 @@ def register_ws_proxy(
 
         free_leases[token] = FreeLease(lease_id=lease_id, robot=robot, exp=exp)
         return {"token": token, "lease": lease_id, "robot": robot, "exp": exp}
+
+    @app.get("/{robot}/stripe/start")
+    async def stripe_start(robot: str, request: Request):
+        """Begin a card purchase: create a Checkout Session and send the buyer to Stripe."""
+        if robot not in proxied or not stripe.enabled:
+            return _stripe_page(404, robot, "card payments are not enabled for this robot")
+        if registry.status(robot)["reserved"]:
+            # The buyer has no identity yet, so any hold blocks them — refuse before any
+            # money moves (decision A.5).
+            return _stripe_page(409, robot, "this robot is currently in use")
+        if reachability.get(robot) is False:
+            return _stripe_page(503, robot, "this robot is offline right now")
+
+        origin = _public_origin(request)
+        form = {
+            "mode": "payment",
+            "payment_method_types[0]": "card",
+            "line_items[0][quantity]": "1",
+            "line_items[0][price_data][currency]": stripe.currency,
+            "line_items[0][price_data][unit_amount]": str(stripe.price_cents),
+            "line_items[0][price_data][product_data][name]": (
+                f"Drive {robot} for {stripe.lease_minutes} min"
+            ),
+            "metadata[robot]": robot,
+            "metadata[gateway]": _public_domain(request),
+            # Literal braces: Stripe substitutes the real session id.
+            "success_url": f"{origin}/{robot}/stripe/confirm?session_id={{CHECKOUT_SESSION_ID}}",
+            "cancel_url": f"{origin}/{robot}/ui",
+        }
+
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=STRIPE_TIMEOUT_S) as client:
+                r = await client.post(
+                    f"{stripe.api_base}/v1/checkout/sessions",
+                    headers=_stripe_headers(stripe),
+                    data=form,
+                )
+        except httpx.HTTPError:
+            logger.warning("ws proxy: stripe start for %s failed to reach Stripe", robot)
+            return _stripe_page(503, robot, "card payments are unavailable right now")
+
+        if not 200 <= r.status_code < 300:
+            # Log the status, never the key.
+            logger.warning("ws proxy: stripe start for %s returned %d", robot, r.status_code)
+            return _stripe_page(503, robot, "card payments are unavailable right now")
+
+        try:
+            session = r.json()
+            url = session["url"]
+        except (ValueError, KeyError, TypeError):
+            logger.warning("ws proxy: stripe start for %s returned no url", robot)
+            return _stripe_page(503, robot, "card payments are unavailable right now")
+
+        return RedirectResponse(url, status_code=303)
+
+    @app.get("/{robot}/stripe/confirm")
+    async def stripe_confirm(robot: str, request: Request):
+        """The success_url target: verify the payment, reserve, and hand back a credential."""
+        if robot not in proxied or not stripe.enabled:
+            return _stripe_page(404, robot, "card payments are not enabled for this robot")
+
+        session_id = request.query_params.get("session_id", "")
+        # Before any Stripe call — also blocks path injection into the retrieve URL.
+        if not session_id or not _SESSION_ID_RE.match(session_id):
+            return _stripe_page(400, robot, "invalid checkout session")
+
+        now = int(time.time())
+
+        # Prune the idempotency cache of expired entries.
+        for sid, (_, exp) in list(confirmed_sessions.items()):
+            if exp <= now:
+                del confirmed_sessions[sid]
+
+        cached = confirmed_sessions.get(session_id)
+        if cached is not None and cached[0] == robot and cached[1] > now:
+            exp = cached[1]
+        else:
+            import httpx
+
+            try:
+                async with httpx.AsyncClient(timeout=STRIPE_TIMEOUT_S) as client:
+                    r = await client.get(
+                        f"{stripe.api_base}/v1/checkout/sessions/{session_id}",
+                        headers=_stripe_headers(stripe),
+                        params=[("expand[]", "payment_intent")],
+                    )
+            except httpx.HTTPError:
+                return _stripe_page(503, robot, "couldn't reach Stripe; refresh to retry")
+
+            if r.status_code == 404:
+                return _stripe_page(400, robot, "unknown checkout session")
+            if r.status_code >= 500:
+                return _stripe_page(503, robot, "couldn't reach Stripe; refresh to retry")
+            if r.status_code != 200:
+                return _stripe_page(502, robot, "card payments are unavailable right now")
+
+            try:
+                session = r.json()
+            except ValueError:
+                return _stripe_page(502, robot, "card payments are unavailable right now")
+
+            if session.get("status") != "complete" or session.get("payment_status") != "paid":
+                return _stripe_page(402, robot, "payment not complete")
+
+            if (
+                session.get("mode") != "payment"
+                or session.get("livemode") != stripe.livemode
+                or session.get("amount_total") != stripe.price_cents
+                or session.get("currency") != stripe.currency
+            ):
+                logger.warning(
+                    "ws proxy: stripe payment mismatch for %s (amount=%r currency=%r livemode=%r)",
+                    robot,
+                    session.get("amount_total"),
+                    session.get("currency"),
+                    session.get("livemode"),
+                )
+                return _stripe_page(
+                    409,
+                    robot,
+                    "payment does not match this gateway's price; contact the operator for a refund",
+                )
+
+            metadata = session.get("metadata") or {}
+            if metadata.get("robot") != robot:
+                return _stripe_page(400, robot, "session is for another robot")
+
+            payment_intent = session.get("payment_intent")
+            created = payment_intent.get("created") if isinstance(payment_intent, dict) else None
+            if not isinstance(created, int) or isinstance(created, bool):
+                return _stripe_page(502, robot, "card payments are unavailable right now")
+
+            # min() guards against Stripe's clock running ahead of this host's clock,
+            # which would otherwise make exp - iat exceed the lease and fail verify()'s
+            # duration check.
+            exp = min(created, now) + stripe.lease_minutes * SECONDS_PER_LEASE_MINUTE
+            if exp <= now:
+                return _stripe_page(409, robot, "lease expired")
+
+            holder = f"stripe:{session_id}"
+            if released_leases.get(holder, 0) > now:
+                return _stripe_page(409, robot, "lease released")
+
+            if not registry.reserve(robot, holder, ttl=exp - now):
+                # Decision A.5: still issue the credential — the console retries "robot is
+                # held by another session" every 5s. Log the robot and the id's tail, never
+                # the full session id.
+                logger.info(
+                    "ws proxy: stripe confirm for %s lost the reserve race (…%s)",
+                    robot,
+                    session_id[-6:],
+                )
+
+            confirmed_sessions[session_id] = (robot, exp)
+
+        claims = StripeClaims(
+            v=1,
+            kind="stripe",
+            robot=robot,
+            gateway=_public_domain(request),
+            lease=session_id,
+            payer="card",
+            iat=now,
+            exp=exp,
+        )
+        credential = mint_stripe(claims, stripe_key)
+        return RedirectResponse(
+            f"/{robot}/ui#token={quote(credential)}",
+            status_code=303,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
