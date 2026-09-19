@@ -452,7 +452,7 @@
     <h2 id="paywallHeading">Pay to drive</h2>
     <p id="paywallReason" class="paywall-reason" hidden></p>
     <p id="paywallPrice" class="paywall-price"></p>
-    <a id="paywallLink" class="stop" href="#">Pay to drive</a>
+    <a id="paywallLink" class="stop" href="#">Pay in crypto</a>
     <a id="paywallCardLink" class="stop" hidden>Pay by card</a>
     <p id="reserveBanner" class="paywall-reservation" role="status" hidden></p>
   </div>
@@ -1035,7 +1035,7 @@
       u.searchParams.set("gateway", location.host);
       u.searchParams.set("robot", robotName);
       els.paywallLink.href = u.href;
-      els.paywallLink.textContent = "Pay to drive";
+      els.paywallLink.textContent = "Pay in crypto";
       els.paywallLink.removeAttribute("aria-disabled");
     } else {
       els.paywallLink.removeAttribute("href");
