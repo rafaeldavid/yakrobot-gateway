@@ -988,6 +988,12 @@ def register_ws_proxy(
             metadata = session.get("metadata") or {}
             if metadata.get("robot") != robot:
                 return _stripe_page(400, robot, "session is for another robot")
+            # One Stripe account can back several gateways serving same-named robots;
+            # without this, one payment would confirm on each of them.
+            if not isinstance(metadata.get("gateway"), str) or normalize_host(
+                metadata["gateway"]
+            ) != normalize_host(_public_domain(request)):
+                return _stripe_page(400, robot, "session is for another gateway")
 
             payment_intent = session.get("payment_intent")
             created = payment_intent.get("created") if isinstance(payment_intent, dict) else None

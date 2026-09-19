@@ -232,7 +232,9 @@ Serving:
     `/{robot}/stripe/confirm`, never while admitting a socket (the credential verifies
     locally); the `session_id` sits in the confirm URL's query string, so it can land in
     uvicorn/tunnel access logs — the code logs only the robot and the id's last 6
-    characters. No refunds from the gateway, ever: refunds and disputes are the
+    characters. One Stripe account may back several gateways: confirm refuses a
+    session whose `metadata.gateway` isn't this gateway, so one payment buys one turn
+    on one gateway. No refunds from the gateway, ever: refunds and disputes are the
     operator's job in the Stripe dashboard.
   - **Free teleop** (neither gate enabled): an unpaid, gateway-local "reserve" click
     instead of a payment — `POST /{robot}/lease/reserve` grants exclusive control for

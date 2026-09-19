@@ -1318,6 +1318,14 @@ def test_stripe_confirm_rejects_other_robot():
     assert r.status_code == 400
 
 
+def test_stripe_confirm_rejects_other_gateway():
+    r = _confirm_seeded(
+        "cs_test_1", paid_session("cs_test_1", "fakerobot_picar", gateway="other.example.com")
+    )
+    assert r.status_code == 400
+    assert "another gateway" in r.text
+
+
 def test_stripe_confirm_rejects_bad_session_id():
     async def run():
         import httpx

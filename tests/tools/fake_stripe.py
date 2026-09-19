@@ -45,11 +45,14 @@ def paid_session(
     created: int | None = None,
     status: str = "complete",
     payment_status: str = "paid",
+    gateway: str = "127.0.0.1:8192",
 ) -> dict:
     """A realistic Checkout Session body, the shape the gateway's confirm reads.
 
     ``created`` (the PaymentIntent's creation time, which the gateway anchors the lease
     ``exp`` to) defaults to now. ``sid`` is the Checkout Session id, e.g. ``cs_test_1``.
+    ``gateway`` defaults to the test suite's gateway host (``GW_PORT``); sessions
+    created through ``POST`` carry whatever ``metadata[gateway]`` the gateway sent.
     """
     return {
         "id": sid,
@@ -60,7 +63,7 @@ def paid_session(
         "amount_total": cents,
         "currency": currency,
         "livemode": livemode,
-        "metadata": {"robot": robot},
+        "metadata": {"robot": robot, "gateway": gateway},
         "payment_intent": {
             "id": f"pi_{sid}",
             "object": "payment_intent",
@@ -107,7 +110,9 @@ def create_fake_stripe(state: StripeState) -> FastAPI:
         robot = form.get("metadata[robot]", "")
         # "Paying" is just following the redirect — record a paid session now so the
         # confirm GET succeeds. Tests override this for the unpaid/mismatch cases.
-        state.sessions[sid] = paid_session(sid, robot)
+        state.sessions[sid] = paid_session(
+            sid, robot, gateway=form.get("metadata[gateway]", "")
+        )
 
         success_url = form.get("success_url", "")
         return {
