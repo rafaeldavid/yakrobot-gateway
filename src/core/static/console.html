@@ -452,7 +452,8 @@
     <h2 id="paywallHeading">Pay to drive</h2>
     <p id="paywallReason" class="paywall-reason" hidden></p>
     <p id="paywallPrice" class="paywall-price"></p>
-    <a id="paywallLink" class="stop" href="#">Pay to drive</a>
+    <a id="paywallLink" class="stop" href="#">Pay in crypto</a>
+    <a id="paywallCardLink" class="stop" hidden>Pay by card</a>
     <p id="reserveBanner" class="paywall-reservation" role="status" hidden></p>
   </div>
 </div>
@@ -631,7 +632,7 @@
                     "speedVal","maxDuty","helpBtn","help","helpClose","keys","vx","vy","om",
                     "tag","vyWrap","videoBtn","camoff","pad","padStop","padCentre","padBtn",
                     "reserveBanner","leaseCountdown","paywall","paywallHeading","paywallReason",
-                    "paywallPrice","paywallLink","txLink","txLinkAnchor","releaseBtn"]) els[id] = $(id);
+                    "paywallPrice","paywallLink","paywallCardLink","txLink","txLinkAnchor","releaseBtn"]) els[id] = $(id);
 
   let cfg = { maxDuty: 1400, deadmanMs: 700, holonomic: true };
   let control = null, degraded = false, isController = true;
@@ -862,6 +863,7 @@
   ]);
 
   let payments = { enabled: false };
+  let stripe = { enabled: false };
   let teleop = { reservation: "none", lease_minutes: null };
   let latestIndex = null;
   let capability = null;   // { token, claims } | null — never verified client-side
@@ -996,11 +998,19 @@
     const heldByOther = !!reservation?.reserved;
     const isFree = teleop.reservation === "free";
 
+    const priceParts = [];
+    if (payments.teleop) priceParts.push(`${payments.teleop.price_usdc} USDC`);
+    if (stripe.enabled) {
+      const amt = (stripe.price_cents / 100).toFixed(2);
+      const label = stripe.currency === "usd" ? `$${amt}` : `${amt} ${stripe.currency.toUpperCase()}`;
+      priceParts.push(`${label} by card`);
+    }
+
     els.paywallHeading.textContent = isFree ? "Reserve to drive" : "Pay to drive";
     els.paywallPrice.textContent = isFree
       ? (teleop.lease_minutes ? `Free — ${teleop.lease_minutes} min per turn` : "")
-      : payments.teleop
-      ? `${payments.teleop.price_usdc} USDC for ${payments.teleop.lease_minutes} min`
+      : priceParts.length
+      ? `${priceParts.join(" · ")} for ${teleop.lease_minutes ?? "?"} min`
       : "";
 
     if (isFree) {
@@ -1014,15 +1024,18 @@
         els.paywallLink.textContent = !online ? "Robot is offline" : "Robot is in use";
         els.paywallLink.setAttribute("aria-disabled", "true");
       }
+      els.paywallCardLink.hidden = true;
       return;
     }
 
+    // The x402 link: shown only when x402 payments are on, exactly as before.
+    els.paywallLink.hidden = !payments.enabled;
     if (payments.url && online && !heldByOther) {
       const u = new URL(payments.url);
       u.searchParams.set("gateway", location.host);
       u.searchParams.set("robot", robotName);
       els.paywallLink.href = u.href;
-      els.paywallLink.textContent = "Pay to drive";
+      els.paywallLink.textContent = "Pay in crypto";
       els.paywallLink.removeAttribute("aria-disabled");
     } else {
       els.paywallLink.removeAttribute("href");
@@ -1032,6 +1045,21 @@
         ? "Robot is in use"
         : "Payments unavailable";
       els.paywallLink.setAttribute("aria-disabled", "true");
+    }
+
+    // The card link: shown only when Stripe is on, gated on the same online/heldByOther
+    // values above so the two buttons can never disagree.
+    els.paywallCardLink.hidden = !stripe.enabled;
+    if (stripe.enabled) {
+      if (online && !heldByOther) {
+        els.paywallCardLink.href = base + "/stripe/start";
+        els.paywallCardLink.textContent = "Pay by card";
+        els.paywallCardLink.removeAttribute("aria-disabled");
+      } else {
+        els.paywallCardLink.removeAttribute("href");
+        els.paywallCardLink.textContent = !online ? "Robot is offline" : "Robot is in use";
+        els.paywallCardLink.setAttribute("aria-disabled", "true");
+      }
     }
   }
 
@@ -1083,14 +1111,15 @@
     const holder = reservation.holder || "";
     const isMine = capability && (
       holder === "lease:" + capability.claims.lease ||
-      holder === "free:" + capability.claims.lease
+      holder === "free:" + capability.claims.lease ||
+      holder === "stripe:" + capability.claims.lease
     );
     if (isMine) {
       els.reserveBanner.hidden = true;
       return;
     }
     const seconds = Math.max(0, Math.round(reservation.expires_in));
-    els.reserveBanner.textContent = (holder.startsWith("lease:") || holder.startsWith("free:"))
+    els.reserveBanner.textContent = (holder.startsWith("lease:") || holder.startsWith("free:") || holder.startsWith("stripe:"))
       ? `Someone else is driving this robot — free in ~${seconds}s`
       : `An agent (${holder}) is controlling this robot — free in ~${seconds}s`;
     els.reserveBanner.hidden = false;
@@ -1114,6 +1143,7 @@
       if (!index) return;
       latestIndex = index;
       if (index.payments) payments = index.payments;
+      if (index.stripe) stripe = index.stripe;
       if (index.teleop) teleop = index.teleop;
       paintReservationBanner(index.robots?.[robotName]?.reservation);
       if (paywalled) showPaywall(els.paywallReason.hidden ? null : els.paywallReason.textContent);
@@ -1125,6 +1155,7 @@
     latestIndex = index;
     if (index) {
       if (index.payments) payments = index.payments;
+      if (index.stripe) stripe = index.stripe;
       if (index.teleop) teleop = index.teleop;
       paintReservationBanner(index.robots?.[robotName]?.reservation);
     }
@@ -1134,7 +1165,7 @@
     // whatever token is on hand — today's behaviour — rather than guessing at a
     // dead screen; if a gate really is on, the server's own 1008 refusal reaches
     // the same paywall via onLeaseRefused.
-    const gated = payments.enabled || teleop.reservation === "free";
+    const gated = payments.enabled || stripe.enabled || teleop.reservation === "free";
     teleopLog("bootstrap", { indexLoaded: !!index, gated, staticToken: !!staticToken, hasCapability: !!capability });
     if (index && gated && !staticToken && !capability) {
       showPaywall(null);
@@ -1190,6 +1221,12 @@
       e.preventDefault();
       reserveAndConnect();
     }
+  });
+
+  // The card button is pure navigation — the href points at /{robot}/stripe/start,
+  // which 302s to Stripe and back through confirm. No fetch here.
+  els.paywallCardLink.addEventListener("click", e => {
+    if (els.paywallCardLink.getAttribute("aria-disabled") === "true") e.preventDefault();
   });
 
   // Never refunds — only frees the robot early for whoever's next (see

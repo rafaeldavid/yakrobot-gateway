@@ -8,12 +8,14 @@ invisible until a real car is moving, so they are worth pinning in CI.
 """
 
 import asyncio
+import base64
 import io
 import json
 import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import parse_qsl, quote, urlparse
 
 import pytest
 
@@ -22,6 +24,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from capability_helper import mint  # noqa: E402
+from tools.fake_stripe import StripeState, create_fake_stripe, paid_session  # noqa: E402
 
 SIM_PORT, GW_PORT = 8191, 8192
 
@@ -96,6 +99,9 @@ _CLEARED_ENV_VARS = (
     "NGROK_DOMAIN", "CLOUDFLARE_DOMAIN",
     "PAYMENTS_ENABLED", "PAYMENTS_URL", "PAYMENTS_ISSUER",
     "TELEOP_PRICE_USDC", "TELEOP_LEASE_MINUTES",
+    "STRIPE_GATE_ENABLED", "STRIPE_SECRET_KEY", "STRIPE_PRICE_CENTS",
+    "STRIPE_CURRENCY", "STRIPE_API_BASE",
+    "STRIPE_AUTOMATIC_TAX", "STRIPE_TAX_CODE",
 )
 
 
@@ -1088,5 +1094,561 @@ def test_free_reservation_endpoints_refused_when_free_mode_off():
                     f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/lease/reserve"
                 )
                 assert r.status_code == 404
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# Stripe fiat gate — start/confirm endpoints, card-paid admission, release.
+# --------------------------------------------------------------------------
+
+def _stripe_env(**overrides) -> dict[str, str]:
+    env = {
+        "STRIPE_GATE_ENABLED": "1",
+        "STRIPE_SECRET_KEY": "sk_test_fake",
+        "STRIPE_PRICE_CENTS": "100",
+        "TELEOP_LEASE_MINUTES": "5",
+    }
+    env.update(overrides)
+    return env
+
+
+class _FakeStripe:
+    """Serve the fake Stripe on GW_PORT + 20 and expose its state for assertions."""
+
+    def __init__(self):
+        self.port = GW_PORT + 20
+        self.state = StripeState()
+
+    async def __aenter__(self):
+        self._server, self._task = await _serve(create_fake_stripe(self.state), self.port)
+        return self
+
+    async def __aexit__(self, *exc):
+        self._server.should_exit = True
+        await self._task
+
+    def env(self, **overrides) -> dict[str, str]:
+        return _stripe_env(STRIPE_API_BASE=f"http://127.0.0.1:{self.port}", **overrides)
+
+
+def _session_id_from(location: str) -> str:
+    return dict(parse_qsl(urlparse(location).query))["session_id"]
+
+
+def _credential_from(location: str) -> str:
+    return location.split("#token=", 1)[1]
+
+
+def _decode_claims(token: str) -> dict:
+    payload = token.split(".")[0]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+def test_stripe_start_redirects_to_checkout():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                assert r.status_code == 303
+                assert "stripe/confirm?session_id=cs_test_" in r.headers["location"]
+                form = fake.state.created_forms[-1]
+                assert form["mode"] == "payment"
+                assert form["payment_method_types[0]"] == "card"
+                assert form["line_items[0][price_data][unit_amount]"] == "100"
+                assert form["metadata[robot]"] == "fakerobot_picar"
+                assert form["success_url"].endswith(
+                    "/fakerobot_picar/stripe/confirm?session_id={CHECKOUT_SESSION_ID}"
+                )
+                assert "automatic_tax[enabled]" not in form  # Stripe Tax is opt-in
+
+    asyncio.run(run())
+
+
+def test_stripe_start_with_automatic_tax_is_inclusive():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            env = fake.env(STRIPE_AUTOMATIC_TAX="1", STRIPE_TAX_CODE="txcd_10000000")
+            async with _Stack(env=env):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                assert r.status_code == 303
+                form = fake.state.created_forms[-1]
+                assert form["automatic_tax[enabled]"] == "true"
+                # Inclusive: the buyer still pays exactly STRIPE_PRICE_CENTS, so the
+                # confirm step's amount_total check keeps holding.
+                assert form["line_items[0][price_data][tax_behavior]"] == "inclusive"
+                assert form["line_items[0][price_data][unit_amount]"] == "100"
+                assert form["line_items[0][price_data][product_data][tax_code]"] == "txcd_10000000"
+
+    asyncio.run(run())
+
+
+def test_stripe_start_refused_while_reserved():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()) as stack:
+                stack.app.state.registry.reserve("fakerobot_picar", "marketplace")
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                assert r.status_code == 409
+                assert fake.state.created_forms == []  # no session was created
+
+    asyncio.run(run())
+
+
+def test_stripe_start_404_when_disabled():
+    async def run():
+        import httpx
+
+        async with _Stack():  # free-mode stack, Stripe off
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                    follow_redirects=False,
+                )
+            assert r.status_code == 404
+
+    asyncio.run(run())
+
+
+def test_stripe_page_escapes_robot_from_path():
+    async def run():
+        import httpx
+
+        async with _Stack(env=_stripe_env()):
+            payload = '"><img src=x onerror=alert(1)>'
+            async with httpx.AsyncClient() as client:
+                for endpoint in ("start", "confirm"):
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/{quote(payload, safe='')}/stripe/{endpoint}",
+                        follow_redirects=False,
+                    )
+                    assert r.status_code == 404
+                    assert payload not in r.text
+                    assert "<img" not in r.text
+
+    asyncio.run(run())
+
+
+def test_stripe_confirm_admits_and_reserves():
+    async def run():
+        import httpx
+        from websockets.asyncio.client import connect
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()) as stack:
+                async with httpx.AsyncClient() as client:
+                    start = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                    sid = _session_id_from(start.headers["location"])
+                    confirm = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                    assert confirm.status_code == 303
+                    credential = _credential_from(confirm.headers["location"])
+
+                    idx = (await client.get(f"http://127.0.0.1:{GW_PORT}/")).json()
+                    assert idx["robots"]["fakerobot_picar"]["reservation"]["holder"] == f"stripe:{sid}"
+
+                async with connect(f"{stack.control}?token={credential}") as ws:
+                    assert (await _recv_json(ws))["type"] == "hello"
+
+    asyncio.run(run())
+
+
+def test_stripe_confirm_is_idempotent():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    start = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                    sid = _session_id_from(start.headers["location"])
+                    for _ in range(2):
+                        confirm = await client.get(
+                            f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                            follow_redirects=False,
+                        )
+                        assert confirm.status_code == 303
+                    # Only one Stripe retrieve despite two confirms.
+                    assert fake.state.retrieve_calls.get(sid) == 1
+                    idx = (await client.get(f"http://127.0.0.1:{GW_PORT}/")).json()
+                    assert idx["robots"]["fakerobot_picar"]["reservation"]["holder"] == f"stripe:{sid}"
+
+    asyncio.run(run())
+
+
+def _confirm_seeded(sid: str, session: dict):
+    """Seed `session` under `sid` and confirm it, returning the raw response."""
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            fake.state.sessions[sid] = session
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    return await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+
+    return asyncio.run(run())
+
+
+def test_stripe_confirm_rejects_unpaid():
+    r = _confirm_seeded("cs_test_1", paid_session("cs_test_1", "fakerobot_picar", payment_status="unpaid"))
+    assert r.status_code == 402
+
+
+def test_stripe_confirm_rejects_wrong_amount():
+    r = _confirm_seeded("cs_test_1", paid_session("cs_test_1", "fakerobot_picar", cents=200))
+    assert r.status_code == 409
+
+
+def test_stripe_confirm_rejects_wrong_currency():
+    r = _confirm_seeded("cs_test_1", paid_session("cs_test_1", "fakerobot_picar", currency="eur"))
+    assert r.status_code == 409
+
+
+def test_stripe_confirm_rejects_livemode_mismatch():
+    r = _confirm_seeded("cs_test_1", paid_session("cs_test_1", "fakerobot_picar", livemode=True))
+    assert r.status_code == 409
+
+
+def test_stripe_confirm_rejects_other_robot():
+    r = _confirm_seeded("cs_test_1", paid_session("cs_test_1", "some_other_robot"))
+    assert r.status_code == 400
+
+
+def test_stripe_confirm_rejects_other_gateway():
+    r = _confirm_seeded(
+        "cs_test_1", paid_session("cs_test_1", "fakerobot_picar", gateway="other.example.com")
+    )
+    assert r.status_code == 400
+    assert "another gateway" in r.text
+
+
+def test_stripe_confirm_rejects_bad_session_id():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id=cs_test_..%2F..",
+                        follow_redirects=False,
+                    )
+                assert r.status_code == 400
+                assert fake.state.retrieve_calls == {}  # the fake was never called
+
+    asyncio.run(run())
+
+
+def test_stripe_confirm_rejects_unknown_session():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id=cs_test_999",
+                        follow_redirects=False,
+                    )
+                # cs_test_999 is not in the fake's sessions, so it answers 404 and
+                # confirm maps that to a 400.
+                assert r.status_code == 400
+
+    asyncio.run(run())
+
+
+def test_stripe_confirm_503_when_stripe_unreachable():
+    async def run():
+        import httpx
+
+        async with _Stack(env=_stripe_env(STRIPE_API_BASE="http://127.0.0.1:9")):
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id=cs_test_1",
+                    follow_redirects=False,
+                )
+            assert r.status_code == 503
+
+    asyncio.run(run())
+
+
+def test_stripe_exp_anchored_to_payment():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            now = int(time.time())
+            sid = "cs_test_1"
+            fake.state.sessions[sid] = paid_session(sid, "fakerobot_picar", created=now - 100)
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                claims = _decode_claims(_credential_from(r.headers["location"]))
+                assert claims["exp"] == (now - 100) + 300
+
+    asyncio.run(run())
+
+
+def test_stripe_confirm_after_lease_window_refused():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            now = int(time.time())
+            sid = "cs_test_1"
+            fake.state.sessions[sid] = paid_session(sid, "fakerobot_picar", created=now - 301)
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                assert r.status_code == 409
+
+    asyncio.run(run())
+
+
+def test_stripe_socket_closes_at_exp():
+    async def run():
+        import httpx
+        from websockets.asyncio.client import connect
+
+        async with _FakeStripe() as fake:
+            now = int(time.time())
+            sid = "cs_test_1"
+            fake.state.sessions[sid] = paid_session(sid, "fakerobot_picar", created=now - 298)
+            async with _Stack(env=fake.env()) as stack:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                credential = _credential_from(r.headers["location"])
+                async with connect(f"{stack.control}?token={credential}") as ws:
+                    assert (await _recv_json(ws))["type"] == "hello"
+                    with pytest.raises(Exception):
+                        await asyncio.wait_for(ws.recv(), timeout=5)
+                    assert ws.close_code == 1008
+                    assert ws.close_reason == "lease expired"
+
+    asyncio.run(run())
+
+
+def test_stripe_release_frees_and_blocks_reconnect_and_reconfirm():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()) as stack:
+                async with httpx.AsyncClient() as client:
+                    start = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                    sid = _session_id_from(start.headers["location"])
+                    confirm = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                    credential = _credential_from(confirm.headers["location"])
+
+                    r = await client.post(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/lease/release",
+                        json={"token": credential},
+                    )
+                    assert r.json() == {"released": True}
+
+                    code, reason = await _refusal(f"{stack.control}?token={credential}")
+                    assert (code, reason) == (1008, "lease released")
+
+                    re = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                    assert re.status_code == 409
+
+    asyncio.run(run())
+
+
+def test_stripe_credential_survives_gateway_restart():
+    async def run():
+        import httpx
+        from websockets.asyncio.client import connect
+
+        async with _FakeStripe() as fake:
+            env = fake.env()
+            credential = None
+            async with _Stack(env=env):
+                async with httpx.AsyncClient() as client:
+                    start = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/start",
+                        follow_redirects=False,
+                    )
+                    sid = _session_id_from(start.headers["location"])
+                    confirm = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                    credential = _credential_from(confirm.headers["location"])
+
+            # New gateway process (fresh registry), same secret → same derived key.
+            async with _Stack(env=env) as stack:
+                async with connect(f"{stack.control}?token={credential}") as ws:
+                    assert (await _recv_json(ws))["type"] == "hello"
+
+    asyncio.run(run())
+
+
+def test_stripe_paid_while_agent_holds():
+    async def run():
+        import httpx
+        from websockets.asyncio.client import connect
+
+        async with _FakeStripe() as fake:
+            env = fake.env(MCP_TOKENS=f"operator={STATIC_TOKEN}")
+            async with _Stack(env=env) as stack:
+                async with connect(f"{stack.control}?token={STATIC_TOKEN}") as ws:
+                    assert (await _recv_json(ws))["type"] == "hello"
+                    sid = "cs_test_1"
+                    fake.state.sessions[sid] = paid_session(sid, "fakerobot_picar")
+                    async with httpx.AsyncClient() as client:
+                        r = await client.get(
+                            f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                            follow_redirects=False,
+                        )
+                        assert r.status_code == 303
+                        credential = _credential_from(r.headers["location"])
+                    code, reason = await _refusal(f"{stack.control}?token={credential}")
+                    assert (code, reason) == (1008, "robot is held by another session")
+
+    asyncio.run(run())
+
+
+def test_stripe_only_refuses_x402_token(monkeypatch):
+    async def run():
+        pk, _ = _new_issuer()
+        x402 = mint(_capability_claims(), pk.to_hex())
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()) as stack:
+                # If the x402 branch were reached, capability.verify's lazy import would
+                # raise and the handshake would fail instead of returning a clean 1008.
+                monkeypatch.setitem(sys.modules, "eth_keys", None)
+                code, reason = await _refusal(f"{stack.control}?token={x402}")
+                assert (code, reason) == (1008, "invalid lease")
+
+    asyncio.run(run())
+
+
+def test_stripe_only_no_token_is_payment_required():
+    async def run():
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()) as stack:
+                assert await _refusal(stack.control) == (1008, "payment required")
+
+    asyncio.run(run())
+
+
+def test_free_reserve_404_when_stripe_on():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/lease/reserve"
+                    )
+                assert r.status_code == 404
+
+    asyncio.run(run())
+
+
+def test_stripe_and_x402_coexist():
+    async def run():
+        import httpx
+        from websockets.asyncio.client import connect
+
+        pk, issuer = _new_issuer()
+        async with _FakeStripe() as fake:
+            env = {**_payments_env(issuer), **fake.env()}
+            async with _Stack(env=env) as stack:
+                # An x402 token admits.
+                x402 = mint(_capability_claims(), pk.to_hex())
+                async with connect(f"{stack.control}?token={x402}") as ws:
+                    assert (await _recv_json(ws))["type"] == "hello"
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/lease/release",
+                            json={"token": x402},
+                        )
+
+                # After its release, a Stripe credential admits.
+                sid = "cs_test_1"
+                fake.state.sessions[sid] = paid_session(sid, "fakerobot_picar")
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"http://127.0.0.1:{GW_PORT}/fakerobot_picar/stripe/confirm?session_id={sid}",
+                        follow_redirects=False,
+                    )
+                credential = _credential_from(r.headers["location"])
+                async with connect(f"{stack.control}?token={credential}") as ws:
+                    assert (await _recv_json(ws))["type"] == "hello"
+                    # While the Stripe holder holds it, a *fresh* x402 lease is refused.
+                    x402_2 = mint(_capability_claims(lease="33333333-3333-4333-8333-333333333333"), pk.to_hex())
+                    code, reason = await _refusal(f"{stack.control}?token={x402_2}")
+                    assert (code, reason) == (1008, "robot is held by another session")
+
+    asyncio.run(run())
+
+
+def test_index_reports_stripe():
+    async def run():
+        import httpx
+
+        async with _FakeStripe() as fake:
+            async with _Stack(env=fake.env()):
+                async with httpx.AsyncClient() as client:
+                    body = (await client.get(f"http://127.0.0.1:{GW_PORT}/")).json()
+                assert body["stripe"] == {
+                    "enabled": True,
+                    "price_cents": 100,
+                    "currency": "usd",
+                    "lease_minutes": 5,
+                }
+                assert body["teleop"]["reservation"] == "paid"
 
     asyncio.run(run())

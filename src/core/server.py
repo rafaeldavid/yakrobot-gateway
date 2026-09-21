@@ -183,6 +183,8 @@ def create_gateway(plugins: dict[str, RobotPlugin]) -> FastAPI:
         index_summary,
         load_free_teleop_config,
         load_payments_config,
+        load_stripe_config,
+        stripe_summary,
         teleop_summary,
     )
     from core.reachability import Reachability, probe_forever
@@ -198,7 +200,15 @@ def create_gateway(plugins: dict[str, RobotPlugin]) -> FastAPI:
             raise PaymentsConfigError(
                 "PAYMENTS_ENABLED=1 needs: uv sync --extra payments"
             ) from None
-    free_teleop_cfg = load_free_teleop_config(payments_cfg)
+    stripe_cfg = load_stripe_config()
+    if stripe_cfg.enabled:
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            raise PaymentsConfigError(
+                "STRIPE_GATE_ENABLED=1 needs: uv sync --extra stripe"
+            ) from None
+    free_teleop_cfg = load_free_teleop_config(payments_cfg, stripe_cfg)
 
     registry = ReservationRegistry()  # shared across every robot server + the index
     reachability = Reachability()  # shared between the proxy's real connects and the probe
@@ -229,6 +239,7 @@ def create_gateway(plugins: dict[str, RobotPlugin]) -> FastAPI:
     app = FastAPI(title="Robot Fleet Gateway", lifespan=lifespan)
     app.state.registry = registry
     app.state.payments = payments_cfg
+    app.state.stripe = stripe_cfg
     app.state.free_teleop = free_teleop_cfg
     app.state.reachability = reachability
 
@@ -241,7 +252,7 @@ def create_gateway(plugins: dict[str, RobotPlugin]) -> FastAPI:
     from core.descriptor_route import CORS_HEADERS, register_descriptor_route
     from core.ws_proxy import register_ws_proxy
 
-    register_ws_proxy(app, plugins, registry, reachability, payments_cfg, free_teleop_cfg)
+    register_ws_proxy(app, plugins, registry, reachability, payments_cfg, free_teleop_cfg, stripe_cfg)
     register_console(app, plugins)
     register_descriptor_route(app, plugins)
 
@@ -263,7 +274,8 @@ def create_gateway(plugins: dict[str, RobotPlugin]) -> FastAPI:
             {
                 "service": "Robot Fleet Gateway",
                 "payments": index_summary(payments_cfg),
-                "teleop": teleop_summary(payments_cfg, free_teleop_cfg),
+                "stripe": stripe_summary(stripe_cfg),
+                "teleop": teleop_summary(payments_cfg, free_teleop_cfg, stripe_cfg),
                 "robots": {
                     name: {
                         "mcp_endpoint": f"/{name}/mcp",

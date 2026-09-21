@@ -29,6 +29,8 @@ export = ["yakrobot-descriptor[model]"]
 # Recovers the signer of a paid-teleop capability against PAYMENTS_ISSUER — signature
 # verification only: no RPC, no provider, no private key. See AGENTS.md.
 payments = ["eth-keys>=0.7", "eth-hash[pycryptodome]>=0.7", "httpx>=0.28.1"]
+# Per-operator Stripe fiat gate: raw httpx against the Stripe REST API (no SDK).
+stripe = ["httpx>=0.28.1"]
 all = [
     "httpx>=0.28.1", "djitellopy>=2.5.0", "pillow>=11.0", "numpy>=2.0",
     "eth-keys>=0.7", "eth-hash[pycryptodome]>=0.7",
