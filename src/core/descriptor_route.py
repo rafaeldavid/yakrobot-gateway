@@ -85,10 +85,19 @@ def register_descriptor_route(app: FastAPI, plugins: dict[str, RobotPlugin]) -> 
         # `export` extra stays optional for a gateway that only drives hardware.
         try:
             from core.descriptor import build_descriptor
-        except ImportError:
+        except ImportError as exc:
+            # Report the import that actually failed. "not installed" is only one
+            # reason this raises, and stating it as the reason sends an operator
+            # to re-run a sync that already succeeded: an editable install whose
+            # .pth is not on sys.path, a partially-built venv, or a broken
+            # transitive dependency all land here and all look identical
+            # otherwise. The underlying message is the whole diagnosis.
+            logger.warning("descriptor import failed: %s", exc)
             raise HTTPException(
                 501,
-                "descriptor export is not installed — run `uv sync --extra export`",
+                f"descriptor export unavailable: {exc}. "
+                f"If yakrobot-descriptor is not installed, run "
+                f"`uv sync --extra export`.",
                 headers=CORS_HEADERS,
             ) from None
 
