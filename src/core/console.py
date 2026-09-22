@@ -15,16 +15,21 @@ file works for any robot mounted here and needs no per-robot templating.
 """
 
 import logging
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 
 from core.plugin import RobotPlugin
 
 logger = logging.getLogger(__name__)
 
 CONSOLE_HTML = Path(__file__).resolve().parent / "static" / "console.html"
+
+# Send /{robot}/ui to /{robot}/ui2. Opt-in per deployment: a car with a working
+# camera should keep the video console as its default.
+CONSOLE_REDIRECT = os.getenv("CONSOLE_REDIRECT_TO_UI2", "").strip() in ("1", "true", "yes")
 TRACE_HTML = Path(__file__).resolve().parent / "static" / "console_trace.html"
 
 
@@ -61,7 +66,17 @@ def register_console(app: FastAPI, plugins: dict[str, RobotPlugin]) -> None:
         )
 
     @app.get("/{robot}/ui")
-    async def robot_console(robot: str):
+    async def robot_console(robot: str, request: Request):
+        # This deployment's car has no working camera, so the video console is a
+        # black rectangle with controls around it. Send /ui to the sensor
+        # console instead, preserving the query string — the credential rides in
+        # ?token= and dropping it would silently log the driver out.
+        #
+        # 307, not 302: it preserves the method, and it is explicitly temporary.
+        # The day the camera ribbon is replaced this line comes out.
+        if CONSOLE_REDIRECT:
+            q = request.url.query
+            return RedirectResponse(f"{request.url.path}2{'?' + q if q else ''}", status_code=307)
         if robot not in drivable:
             # Either an unknown robot or one with no realtime socket to drive
             # (the Tello speaks UDP). Refuse rather than serve a console whose
