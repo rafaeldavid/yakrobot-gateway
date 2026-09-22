@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# The car's persistent Cloudflare tunnel.
+#
+#   tools/tunnel start | stop | status | url
+#
+# Named tunnel, so the hostname never changes — unlike a quick tunnel, whose
+# *.trycloudflare.com URL is regenerated on every run and cannot be shared in
+# advance or bookmarked.
+set -euo pipefail
+NAME=picar-freenove-01
+HOST=picar-freenove-01.yakrover.online
+CFG="$HOME/.cloudflared/$NAME.yml"
+LOG=/tmp/cfd-$NAME.log
+
+running() { pgrep -f "tunnel .*run .*$NAME" >/dev/null 2>&1; }
+
+case "${1:-status}" in
+  start)
+    running && { echo "already running — $HOST"; exit 0; }
+    [ -f "$CFG" ] || { echo "missing $CFG" >&2; exit 1; }
+    nohup cloudflared --config "$CFG" tunnel run "$NAME" > "$LOG" 2>&1 &
+    for _ in $(seq 1 20); do
+      grep -q "Registered tunnel connection" "$LOG" 2>/dev/null && break
+      sleep 1
+    done
+    n=$(grep -c "Registered tunnel connection" "$LOG" 2>/dev/null || echo 0)
+    echo "started — $n edge connection(s)"
+    echo "https://$HOST/picar_freenove/ui2"
+    ;;
+  stop)
+    # Match on the tunnel NAME, which appears only in cloudflared's own argv.
+    # Never `pkill -f` a pattern that this shell also carries.
+    for p in $(pgrep -f "tunnel .*run .*$NAME" || true); do kill "$p"; done
+    echo "stopped"
+    ;;
+  url) echo "https://$HOST/picar_freenove/ui2" ;;
+  status)
+    if running; then
+      echo "up — https://$HOST"
+      grep -c "Registered tunnel connection" "$LOG" 2>/dev/null | xargs echo "  edge connections:"
+    else
+      echo "down"
+    fi
+    ;;
+  *) echo "usage: tools/tunnel start|stop|status|url" >&2; exit 2 ;;
+esac
