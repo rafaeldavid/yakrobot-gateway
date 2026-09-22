@@ -1,0 +1,1368 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scope — picar</title>
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ── tokens ───────────────────────────────────────────────────────────────
+   Candy Land, not Candy Crush: the 1949 board is pastel and printed on light
+   card, so this is a LIGHT instrument — vanilla ground, chalky sweets, and a
+   soft storybook palette rather than saturated jewels on black.
+
+   Two values per hue. The pastel dresses surfaces; the darkened twin carries
+   type, because a mint label on whipped cream is unreadable. Every pairing
+   used for text clears WCAG AA-normal (checked, lowest is 5.16:1).          */
+:root{
+  --vanilla:#fdf6e9;     /* the board */
+  --whip:#fffdf8;        /* raised card */
+  --icing:#f3e6f6;       /* recessed wells */
+
+  --taffy:#ffb3d1;       /* pink — THE accent, the rover, the sweep */
+  --taffy-ink:#c72f52;
+  --mint:#9de6c8;
+  --mint-ink:#15785a;
+  --butter:#ffe08a;
+  --butter-ink:#a8560a;
+  --lilac:#c9a7f0;
+  --lilac-ink:#7a4ec4;
+  --sky:#a8d8f0;
+  --sky-ink:#1f6f96;
+
+  --cocoa:#5a3d4e;       /* body type — soft plum-brown, never black */
+  --dim:#7d5c6e;         /* labels */
+  --line:#e6d3e8;        /* hairlines */
+
+  --r-lg:26px; --r-md:18px; --r-sm:12px;
+  /* Chalky offset shadows, not glows — light backgrounds make glows muddy. */
+  --pop:0 5px 0 rgba(122,78,196,.22), 0 10px 22px rgba(122,78,196,.14);
+  --pop-sm:0 3px 0 rgba(122,78,196,.18);
+  --ease:cubic-bezier(.34,1.56,.64,1);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overscroll-behavior:none}
+body{
+  background:
+    radial-gradient(1000px 640px at 14% -8%, #ffeaf3 0%, transparent 62%),
+    radial-gradient(880px 560px at 104% 108%, #e6f7ef 0%, transparent 58%),
+    var(--vanilla);
+  color:var(--cocoa);
+  font-family:Fredoka,ui-rounded,"SF Pro Rounded",system-ui,sans-serif;
+  font-size:15px; line-height:1.45;
+  display:grid; grid-template-columns:minmax(0,1fr) 372px;
+  overflow:hidden; -webkit-tap-highlight-color:transparent;
+}
+.mono{font-family:"Space Mono",ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+
+/* ── scope ─────────────────────────────────────────────────────────────── */
+#stage{position:relative;display:grid;place-items:center;padding:20px;min-width:0}
+#scopeWrap{
+  position:relative;width:min(100%,calc(100vh - 40px));aspect-ratio:1;
+  border-radius:50%;
+  background:radial-gradient(circle at 42% 34%, var(--whip) 0%, #f7ecf6 62%, #efe0f0 100%);
+  box-shadow:
+    inset 0 0 0 3px var(--taffy),
+    inset 0 0 40px rgba(201,167,240,.28),
+    0 16px 44px rgba(122,78,196,.20);
+}
+#scopeWrap::after{  /* the gloss — one highlight sells the candy-glass read */
+  content:"";position:absolute;inset:3%;border-radius:50%;pointer-events:none;
+  background:linear-gradient(160deg, rgba(255,255,255,.75) 0%, rgba(255,255,255,.18) 24%, transparent 44%);
+}
+canvas{display:block;width:100%;height:100%;border-radius:50%}
+
+/* corner badges on the scope */
+.badge{
+  position:absolute;z-index:3;display:flex;align-items:center;gap:7px;
+  background:rgba(255,253,248,.93);backdrop-filter:blur(8px);
+  border:2px solid var(--lilac);border-radius:999px;color:var(--cocoa);
+  padding:7px 14px;font-size:12px;font-weight:600;letter-spacing:.04em;
+  box-shadow:var(--pop-sm);
+}
+#drBadge{top:14px;left:50%;transform:translateX(-50%);cursor:help;color:var(--butter-ink);border-color:var(--butter)}
+#drBadge b{font-family:"Space Mono",monospace;letter-spacing:.1em}
+#rangeBadge{bottom:14px;left:50%;transform:translateX(-50%)}
+
+/* ── rail ──────────────────────────────────────────────────────────────── */
+#rail{
+  background:linear-gradient(180deg, rgba(255,234,243,.5), rgba(253,246,233,.2));
+  border-left:2px solid var(--line);
+  padding:16px 16px calc(16px + env(safe-area-inset-bottom));
+  overflow-y:auto;display:flex;flex-direction:column;gap:14px;
+}
+.card{
+  background:var(--whip);
+  border:2px solid var(--line);border-radius:var(--r-lg);
+  padding:14px;box-shadow:var(--pop-sm);
+}
+.card h2{
+  margin:0 0 10px;font-size:11px;font-weight:700;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--dim);
+}
+
+/* callsign header */
+#callsign{display:flex;align-items:center;gap:10px}
+#callsign .dot{width:12px;height:12px;border-radius:50%;background:var(--taffy-ink);
+  box-shadow:0 0 0 4px rgba(199,47,82,.16);transition:.3s}
+#callsign .dot.live{background:var(--mint-ink);box-shadow:0 0 0 4px rgba(21,120,90,.18)}
+#callsign .id{font-size:19px;font-weight:700;letter-spacing:-.01em;line-height:1.1}
+#callsign .st{font-size:11.5px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+
+/* instrument readouts — the ATC half */
+.reads{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.read{background:var(--icing);border:1.5px solid var(--line);
+  border-radius:var(--r-sm);padding:9px 11px}
+.read .lbl{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.read .val{font-family:"Space Mono",monospace;font-size:19px;font-weight:700;line-height:1.25}
+.read .val small{font-size:11px;font-weight:400;opacity:.65}
+.val.ok{color:var(--mint-ink)} .val.warn{color:var(--butter-ink)} .val.bad{color:var(--taffy-ink)}
+
+/* IR lamps */
+.lamps{display:flex;gap:8px}
+.lamp{flex:1;text-align:center;padding:9px 0;border-radius:var(--r-sm);
+  background:var(--icing);border:1.5px solid var(--line);
+  font-size:9.5px;letter-spacing:.12em;color:var(--dim);transition:.18s var(--ease)}
+.lamp.on{background:var(--taffy);border-color:var(--taffy-ink);color:#5a1226;font-weight:700;
+  transform:translateY(-2px) scale(1.04);box-shadow:0 4px 0 rgba(199,47,82,.3)}
+
+/* light meters */
+.meter{display:flex;align-items:center;gap:9px;margin:7px 0}
+.meter .cap{width:34px;font-size:11px;color:var(--dim)}
+.meter .track{flex:1;height:10px;border-radius:999px;background:var(--icing);
+  border:1.5px solid var(--line);overflow:hidden}
+.meter .fill{height:100%;width:0;border-radius:999px;
+  background:linear-gradient(90deg,var(--lilac),var(--butter));transition:width .45s var(--ease)}
+.meter .num{font-family:"Space Mono",monospace;font-size:12px;min-width:46px;text-align:right}
+
+/* candy buttons */
+button{font-family:inherit;cursor:pointer;border:none;color:var(--cocoa)}
+.candy{
+  border-radius:var(--r-md);padding:13px 12px;font-size:14px;font-weight:600;
+  background:linear-gradient(180deg,#ffffff,var(--lilac));
+  border:2px solid var(--lilac-ink);
+  box-shadow:var(--pop), inset 0 2px 0 rgba(255,255,255,.8);
+  transition:transform .14s var(--ease), box-shadow .14s var(--ease), filter .14s;
+}
+.candy:hover{filter:brightness(1.1)}
+.candy:active{transform:translateY(4px);box-shadow:0 1px 0 rgba(122,78,196,.22), inset 0 2px 0 rgba(255,255,255,.6)}
+.candy:focus-visible{outline:3px solid var(--taffy-ink);outline-offset:3px}
+.candy.wide{width:100%}
+/* STOP is the safety control, so it is the biggest target on the page —
+   comfortably past the 44 px touch floor, not scraping it. */
+.candy.stop{background:linear-gradient(180deg,#ff8fab,var(--taffy-ink));
+  border-color:#9c1f3d;color:var(--whip);
+  padding:18px 12px;font-size:17px;font-weight:700;letter-spacing:.06em}
+.candy.ghost{background:linear-gradient(180deg,#ffffff,var(--icing));border-color:var(--line)}
+
+/* LED pills */
+.leds{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.led{border-radius:var(--r-md);padding:10px 6px 9px;font-size:12px;font-weight:600;
+  background:linear-gradient(180deg,#ffffff,var(--icing));
+  border:2px solid var(--line);
+  box-shadow:var(--pop-sm), inset 0 2px 0 rgba(255,255,255,.9);
+  transition:transform .14s var(--ease), box-shadow .14s var(--ease)}
+.led .chip{display:block;height:7px;border-radius:999px;margin-bottom:7px;
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
+.led:active{transform:translateY(3px)}
+.led.on{border-color:var(--taffy-ink);background:linear-gradient(180deg,#fff,var(--taffy));
+  transform:translateY(-2px)}
+
+/* thumbpad — the reason this works on a phone at all */
+#drive{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+#pad{
+  position:relative;width:100%;aspect-ratio:1;max-width:186px;margin:0 auto;
+  border-radius:50%;touch-action:none;
+  background:radial-gradient(circle at 40% 34%, #fff, var(--icing) 70%);
+  box-shadow:inset 0 0 0 3px var(--lilac), inset 0 6px 16px rgba(122,78,196,.12), var(--pop-sm);
+}
+#pad::before{ /* crosshair, so the neutral point is findable by thumb */
+  content:"";position:absolute;inset:26%;border-radius:50%;
+  border:2px dashed var(--lilac);
+}
+#knob{
+  position:absolute;left:50%;top:50%;width:34%;aspect-ratio:1;border-radius:50%;
+  transform:translate(-50%,-50%);pointer-events:none;
+  background:radial-gradient(circle at 38% 32%, #fff0f6, var(--taffy) 58%, #e878a4);
+  box-shadow:0 5px 0 var(--taffy-ink), 0 8px 16px rgba(199,47,82,.28), inset 0 3px 0 rgba(255,255,255,.85);
+  transition:transform .18s var(--ease);
+}
+.cmdbar{display:flex;gap:7px;margin-top:11px}
+.cmdbar span{flex:1;display:flex;align-items:baseline;justify-content:center;gap:5px;
+  padding:7px 4px;border-radius:var(--r-sm);background:var(--icing);
+  border:1.5px solid var(--line)}
+.cmdbar i{font-style:normal;font-size:10px;color:var(--dim)}
+.cmdbar b{font-size:14px;font-weight:700}
+.cmdbar span.live{border-color:var(--taffy-ink);background:var(--taffy)}
+.spinBtn{width:58px;height:58px;border-radius:50%;font-size:23px;line-height:1;
+  display:grid;place-items:center;flex:none}
+
+details.more{border:none}
+details.more summary{
+  list-style:none;cursor:pointer;font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--dim);padding:4px 0;font-weight:700}
+details.more summary::-webkit-details-marker{display:none}
+details.more summary::after{content:" ▾"}
+details.more[open] summary::after{content:" ▴"}
+.row{display:flex;align-items:center;gap:10px;margin:9px 0}
+.row label{flex:1;font-size:12px;color:var(--dim)}
+input[type=range]{flex:1;accent-color:var(--taffy-ink);min-width:0}
+.row .num{font-family:"Space Mono",monospace;font-size:12px;min-width:48px;text-align:right}
+.note{font-size:11.5px;color:var(--dim);line-height:1.5}
+
+/* ── mobile: scope on top, thumb-reachable controls below ─────────────── */
+@media (max-width:900px){
+  body{grid-template-columns:1fr;grid-template-rows:auto 1fr;overflow-y:auto}
+  #stage{padding:12px 12px 0}
+  #scopeWrap{width:min(100%,86vw)}
+  #rail{border-left:none;border-top:2px solid var(--line);
+    padding:14px 14px calc(22px + env(safe-area-inset-bottom))}
+  #pad{max-width:154px}
+}
+/* start gate — a shared link should not hand someone the controls before they
+   have read a word, and it must not hold the robot for a passer-by either. */
+#gate{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:20px;
+  background:rgba(253,246,233,.86);backdrop-filter:blur(10px)}
+#gate.gone{display:none}
+.gatecard{max-width:460px;background:var(--whip);border:3px solid var(--taffy);
+  border-radius:var(--r-lg);padding:26px;box-shadow:var(--pop);max-height:90vh;overflow-y:auto}
+.gatecard h1{font-size:23px;margin:0 0 12px;line-height:1.2}
+.gatecard p{margin:0 0 12px;font-size:14px;color:var(--cocoa)}
+.gatecard ul{margin:0 0 14px;padding-left:19px;font-size:13.5px;line-height:1.65}
+.gatecard li{margin-bottom:7px}
+.gatecard .gentle{color:var(--dim);font-size:12.5px;font-style:italic}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="gatecard">
+    <h1>You're about to drive a real robot</h1>
+    <p>This is a four-wheeled rover on a floor somewhere, with no camera. Everything
+       you see on the scope comes from its distance, line and light sensors, plus
+       a guess at where it has got to.</p>
+    <ul>
+      <li><b>Drag the pink pad</b> to move — up is forward, sideways strafes.
+          On a keyboard, <b>WASD</b> and <b>Q</b>/<b>E</b>.</li>
+      <li><b>Let go and it stops.</b> It also stops on its own if your connection
+          drops, so you cannot run it into a wall by losing signal.</li>
+      <li>You get <b>five minutes</b>, then someone else can take a turn. Hand it
+          back early with the button in the corner.</li>
+    </ul>
+    <p class="gentle">Be kind to it — it is somebody's actual robot.</p>
+    <button class="candy wide" id="gateGo">Take the controls</button>
+    <button class="candy wide ghost" id="gateWatch" style="margin-top:9px">Just look around</button>
+  </div>
+</div>
+
+<main id="stage">
+  <div id="scopeWrap">
+    <div class="badge" id="drBadge" title="Dead reckoning: position is integrated from the velocities we send, not measured. This car has no wheel encoders, so slip and battery sag make it drift. Sensor readings are real; where they are plotted is an estimate.">
+      <b>DR</b> estimated position
+    </div>
+    <canvas id="c"></canvas>
+    <div class="badge" id="rangeBadge"><span class="mono" id="scaleTxt">±1.5 m</span></div>
+  </div>
+</main>
+
+<aside id="rail">
+
+  <div class="card">
+    <div id="callsign">
+      <span class="dot" id="linkDot"></span>
+      <div style="flex:1;min-width:0">
+        <div class="id" id="robotName">PICAR</div>
+        <div class="st" id="linkTxt">connecting</div>
+      </div>
+      <div style="text-align:right">
+        <div class="st">hold</div>
+        <div class="mono" id="lease" style="font-size:15px;font-weight:700">—</div>
+      </div>
+    </div>
+    <button class="candy wide ghost" id="reserve" hidden style="margin-top:11px">Take control — 5 min</button>
+    <button class="candy wide ghost" id="release" hidden style="margin-top:11px">Hand it back</button>
+    <div class="note" id="leaseNote" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Instruments</h2>
+    <div class="reads">
+      <div class="read"><div class="lbl">Range ahead</div><div class="val" id="rng">—</div></div>
+      <div class="read"><div class="lbl">Battery</div><div class="val" id="batt">—</div></div>
+      <div class="read"><div class="lbl">Heading</div><div class="val mono" id="ph">0°</div></div>
+      <div class="read"><div class="lbl">Travelled</div><div class="val mono" id="plen">0<small>mm</small></div></div>
+      <div class="read" style="grid-column:1/-1"><div class="lbl">Mapped</div>
+        <div class="val mono" id="mapped">0<small> cells · 0 obstacles</small></div></div>
+    </div>
+    <h2 style="margin-top:14px">Line sensors</h2>
+    <div class="lamps">
+      <div class="lamp" id="irL">PORT</div><div class="lamp" id="irM">CENTRE</div><div class="lamp" id="irR">STBD</div>
+    </div>
+    <div class="note" id="irNote" style="margin-top:7px">waiting for telemetry</div>
+    <h2 style="margin-top:14px">Light</h2>
+    <div class="meter"><span class="cap">port</span><span class="track"><span class="fill" id="ltLb"></span></span><span class="num" id="ltL">—</span></div>
+    <div class="meter"><span class="cap">stbd</span><span class="track"><span class="fill" id="ltRb"></span></span><span class="num" id="ltR">—</span></div>
+    <div class="note" id="ltNote"></div>
+  </div>
+
+  <div class="card">
+    <h2>Flight controls</h2>
+    <div id="drive">
+      <button class="candy spinBtn" id="spinL" title="Rotate anticlockwise">↺</button>
+      <div id="pad"><div id="knob"></div></div>
+      <button class="candy spinBtn" id="spinR" title="Rotate clockwise">↻</button>
+    </div>
+    <div class="cmdbar mono" id="cmdBar">
+      <span><i>vx</i><b id="cvx">0</b></span>
+      <span><i>vy</i><b id="cvy">0</b></span>
+      <span><i>ω</i><b id="com">0</b></span>
+    </div>
+    <button class="candy wide" id="scan" style="margin-top:12px">Look around</button>
+    <button class="candy wide stop" id="estop" style="margin-top:9px">STOP</button>
+    <div class="note" style="margin-top:8px">
+      <b>Look around</b> sweeps the sensor head left and right and marks what it
+      finds on the map. It stops the wheels first, so bearings are not smeared
+      against a moving car.<br>
+      Drag the pad to drive — up is forward, sideways strafes.
+      Keyboard: <b>WASD</b>, <b>Q</b>/<b>E</b> to rotate, <b>space</b> stops.
+      Let go and it stops; the car also halts <span id="deadman">700 ms</span>
+      after the last command, so a dropped link cannot leave it running.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Lights</h2>
+    <div class="leds" id="leds"></div>
+    <div class="row" style="margin-top:11px">
+      <label for="bright">brightness</label>
+      <input type="range" id="bright" min="5" max="120" step="5" value="55">
+      <span class="num" id="brightV">55</span>
+    </div>
+    <div class="note" id="ledNote">on SPI, so lighting never fights the motors</div>
+  </div>
+
+  <div class="card">
+    <details class="more">
+      <summary>Scope &amp; calibration</summary>
+      <div class="row"><label for="zoom">range</label><input type="range" id="zoom" min="10" max="200" step="5" value="60"><span class="num" id="zoomV">60</span></div>
+      <div class="row"><label for="sLin">mm/s per 1000</label><input type="range" id="sLin" min="50" max="900" step="10" value="300"><span class="num" id="sLinV">300</span></div>
+      <div class="row"><label for="sAng">°/s per 1000</label><input type="range" id="sAng" min="10" max="360" step="5" value="90"><span class="num" id="sAngV">90</span></div>
+      <div class="row"><label for="sDuty">speed cap</label><input type="range" id="sDuty" min="400" max="1400" step="50" value="1000"><span class="num" id="sDutyV">1000</span></div>
+      <div class="note">The two rates are guesses — nothing on this car measures
+        distance. Drive a known metre and tune them until the trail agrees.</div>
+      <button class="candy wide ghost" id="forget" style="margin-top:11px">Forget the map</button>
+      <button class="candy wide ghost" id="clear" style="margin-top:9px">Clear trail</button>
+      <button class="candy wide ghost" id="reset" style="margin-top:9px">Recentre on origin</button>
+    </details>
+  </div>
+
+</aside>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ── protocol ─────────────────────────────────────────────────────────
+     Two ways in, not interchangeable: ?token=<MCP_TOKENS> is the operator's
+     static credential (no lease, holds the robot while the socket is open);
+     POST /lease/reserve mints a free 5-minute lease, which is what makes a
+     bare URL usable. Browsers cannot set headers on a WS handshake, so the
+     credential always rides in the query string.                          */
+  const base   = location.pathname.replace(/\/ui2\/?$/, "");
+  const wsRoot = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base;
+  const token  = new URLSearchParams(location.search).get("token");
+  const el = id => document.getElementById(id);
+  el("robotName").textContent = (base.replace(/^\//, "") || "picar").toUpperCase();
+
+  const HEARTBEAT_MS = 150, PING_MS = 1000;
+  let control = null, retry = 500;
+
+  /* ── state ─────────────────────────────────────────────────────────── */
+  const cmd  = { vx:0, vy:0, omega:0 };
+  const pose = { x:0, y:0, th:0 };
+  let pathLen = 0;
+  const trail = [{x:0,y:0}], hits = [], marks = [], pings = [], puffs = [];
+  const MAX_TRAIL = 3000, MAX_HITS = 500, MAX_MARKS = 350;
+  let lastRange = null, lastLine = null;
+
+  /* ── occupancy map ────────────────────────────────────────────────────
+     A range reading is not one data point, it is a statement about a whole
+     ray: something is at the far end, and everything in between is empty.
+     Counting both is what turns a scatter of dots into rooms and walls.
+
+     Each 60 mm cell keeps a hit/miss tally. Repeated hits harden into an
+     obstacle; repeated misses clear to open floor. A single stray echo — and
+     ultrasonic gives plenty, off soft or angled surfaces — cannot draw a wall
+     on its own, which is the whole reason for tallying rather than plotting.
+
+     Honest limits, both already flagged by the DR badge:
+       - positions come from dead reckoning, so the map smears as it drifts;
+       - the sonar beam is ~30 deg wide, so a return is credited to the centre
+         cell when it could be anywhere across that arc.
+     It is a sketch of the room, not a survey. */
+  const CELL = 60;
+  const cells = new Map();
+  const key = (cx, cy) => cx + "," + cy;
+  const toCell = v => Math.floor(v / CELL);
+
+  /* Hits and misses are NOT symmetric evidence, and treating them as such was
+     a real bug: rays travelling parallel to a wall cross its cells and report
+     them free, so a wall was eroded faster than perpendicular rays could build
+     it and only the most recently seen one survived.
+
+     A hit is a positive detection — something returned an echo from here. A
+     miss is an inference — nothing returned from along this ray, which is
+     weaker, and wrong whenever the ~30 deg beam clips an edge. So a miss is
+     worth about a third of a hit, and neither erases the other. This is the
+     usual log-odds occupancy grid, with the weights that actually matter. */
+  const HIT_W = 1.0, MISS_W = 0.32;
+  const SOLID = 2.0, CLEAR = -1.5;
+  const score = c => c.hit*HIT_W - c.miss*MISS_W;
+
+  function bump(cx, cy, field) {
+    const k = key(cx, cy);
+    let c = cells.get(k);
+    if (!c) { c = { hit: 0, miss: 0 }; cells.set(k, c); }
+    // Cap both so a cell can still change its mind after the map drifts — an
+    // uncapped tally would freeze the first observation in forever.
+    if (c[field] < 20) c[field]++;
+  }
+
+  function observeRay(x0, y0, x1, y1, hitAtEnd) {
+    // Walk the ray in cell-sized steps, marking free space, then credit the
+    // endpoint. Step is half a cell so nothing is skipped diagonally.
+    const dx = x1 - x0, dy = y1 - y0;
+    const dist = Math.hypot(dx, dy);
+    if (!dist) return;
+    const steps = Math.min(400, Math.ceil(dist / (CELL / 2)));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      bump(toCell(x0 + dx*t), toCell(y0 + dy*t), "miss");
+    }
+    if (hitAtEnd) bump(toCell(x1), toCell(y1), "hit");
+  }
+
+  // What the strip is actually doing. `pixels` is ground truth — the robot
+  // reports all eight RGB triples in its `led` reply — but only at the moment
+  // a command lands. Animated effects keep running on the car afterwards, so
+  // for those the sprite animates locally using the same shape the robot's
+  // driver uses. Static effects need no faking at all.
+  let led = { effect:"off", brightness:55, pixels:Array(8).fill([0,0,0]) };
+
+  const cal = { lin:300, ang:90, duty:1000, zoom:60 };
+  for (const [id,key,out] of [["sLin","lin","sLinV"],["sAng","ang","sAngV"],
+                              ["sDuty","duty","sDutyV"],["zoom","zoom","zoomV"]]) {
+    const i = el(id);
+    i.addEventListener("input", () => { cal[key] = +i.value; el(out).textContent = i.value; });
+    el(out).textContent = i.value;
+  }
+
+  /* ── dead reckoning ───────────────────────────────────────────────────
+     REP-103 throughout: x forward, y left, theta anticlockwise — the same
+     convention the robot uses, so there is no sign juggling anywhere.    */
+  let lastT = performance.now();
+  function integrate(now) {
+    const dt = Math.min((now - lastT)/1000, 0.1);   // a backgrounded tab
+    lastT = now;                                     // must not teleport
+    if (!dt) return;
+    const mm = cal.lin/1000, rad = (cal.ang*Math.PI/180)/1000;
+    const vx = cmd.vx*mm, vy = cmd.vy*mm, w = cmd.omega*rad;
+    if (!vx && !vy && !w) return;
+    pose.th += w*dt;
+    const c = Math.cos(pose.th), s = Math.sin(pose.th);
+    const dx = (vx*c - vy*s)*dt, dy = (vx*s + vy*c)*dt;
+    pose.x += dx; pose.y += dy; pathLen += Math.hypot(dx,dy);
+    const last = trail[trail.length-1];
+    if (Math.hypot(pose.x-last.x, pose.y-last.y) > 5) {
+      trail.push({x:pose.x,y:pose.y});
+      if (trail.length > MAX_TRAIL) trail.shift();
+    }
+  }
+
+  /* ── canvas ───────────────────────────────────────────────────────── */
+  const cv = el("c"), ctx = cv.getContext("2d");
+  let W=0, H=0, R=0;
+  function resize() {
+    const dpr = Math.min(devicePixelRatio||1, 2);
+    const box = cv.getBoundingClientRect();
+    W = box.width; H = box.height; R = Math.min(W,H)/2;
+    cv.width = W*dpr; cv.height = H*dpr;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  addEventListener("resize", resize);
+  const pxPerMm = () => cal.zoom/100;
+  const toScreen = p => [W/2 + (p.x-pose.x)*pxPerMm(), H/2 - (p.y-pose.y)*pxPerMm()];
+
+  /* The scope face: range rings, bearing ticks, sweep. North-up like a real
+     controller's display — the rover rotates within it, which keeps the
+     trail's shape honest. Track-up would be easier to drive but would make
+     the path meaningless, and the path is the point. */
+  // The board's signature is its coloured path, so the range rings ARE that
+  // path: each ring takes the next sweet in sequence, which makes distance
+  // readable by colour instead of by squinting at a label. Functional
+  // decoration — the reason to reach for Candy Land rather than paint it on.
+  const PATH = ["#ef7a9a","#ffc46b","#ffe08a","#9de6c8","#a8d8f0","#c9a7f0"];
+  let sweep = 0;
+  function scopeFace(t) {
+    const k = pxPerMm();
+    ctx.save(); ctx.translate(W/2, H/2);
+
+    const stepMm = [250,500,1000,2000,5000].find(s => s*k > 46) || 5000;
+    ctx.font = 'bold 10px "Space Mono",monospace'; ctx.textAlign = "center";
+    let ring = 0;
+    for (let r = stepMm; r*k < R*1.42; r += stepMm, ring++) {
+      const hue = PATH[ring % PATH.length];
+      ctx.strokeStyle = hue; ctx.lineWidth = 7; ctx.globalAlpha = .38;
+      ctx.beginPath(); ctx.arc(0,0,r*k,0,7); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(0,0,r*k,0,7); ctx.stroke();
+      // the label rides on its own ring colour
+      const lbl = (r/1000).toFixed(r%1000?1:0)+"m";
+      ctx.fillStyle = "#fffdf8";
+      ctx.beginPath(); ctx.roundRect(-16, -r*k-9, 32, 15, 7); ctx.fill();
+      ctx.strokeStyle = hue; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = "#5a3d4e"; ctx.fillText(lbl, 0, -r*k + 2);
+    }
+    for (let a = 0; a < 360; a += 30) {
+      const rad = (a-90)*Math.PI/180, card = a%90===0;
+      ctx.strokeStyle = card ? "#c72f52" : "#c9a7f0";
+      ctx.lineWidth = card ? 3 : 2; ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(rad)*(R-(card?20:11)), Math.sin(rad)*(R-(card?20:11)));
+      ctx.lineTo(Math.cos(rad)*(R-5), Math.sin(rad)*(R-5));
+      ctx.stroke();
+    }
+    // the sweep — warm peach on light, since a glow would only muddy it
+    sweep = (t/2600)%1 * Math.PI*2;
+    if (ctx.createConicGradient) {
+      const g = ctx.createConicGradient(sweep, 0, 0);
+      g.addColorStop(0,   "rgba(255,179,209,.55)");
+      g.addColorStop(.12, "rgba(255,179,209,0)");
+      g.addColorStop(1,   "rgba(255,179,209,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(0,0,R,0,7); ctx.fill();
+    }
+    ctx.strokeStyle = "rgba(199,47,82,.5)"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(sweep)*R, Math.sin(sweep)*R); ctx.stroke();
+    ctx.restore();
+
+    const [ox,oy] = toScreen({x:0,y:0});
+    ctx.strokeStyle = "#7a4ec4"; ctx.lineWidth = 2; ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(ox-7,oy); ctx.lineTo(ox+7,oy);
+    ctx.moveTo(ox,oy-7); ctx.lineTo(ox,oy+7); ctx.stroke();
+  }
+
+  /* ── the rover ────────────────────────────────────────────────────────
+     Scale is from the FNK0043 CAD: 151 mm across the wheels, 211 mm long,
+     wheel centres ±70 fore/aft and ±62 across, 53 mm wheels. Local frame is
+     the robot's own (x forward, y left); canvas rotation carries heading. */
+  const CAR = { halfLen:100, halfWid:46, wheelR:26.5, wheelW:13, wheelX:70, wheelY:62 };
+  let spin = 0, blink = 0, nextBlink = 3000;
+
+  /* Googly eyes, done properly: a real googly pupil is a loose disc that slides
+     inside the shell, so it LAGS the movement instead of leading it. Seen from
+     above there is no gravity in-plane, so the only forces are inertia (the
+     pupil keeps going when the car changes speed) and the swing from rotating
+     about a point the eyes are offset from. A spring pulls it back to centre
+     and damping settles it — underdamped on purpose, so it overshoots and
+     wobbles the way the plastic ones do. */
+  const pupils = [ {x:0,y:0,vx:0,vy:0}, {x:0,y:0,vx:0,vy:0} ];
+  let prevVx = 0, prevVy = 0, prevOm = 0;
+
+  function tickPupils(dt) {
+    if (dt <= 0) return;
+    // Acceleration of the body, from the change in what we commanded.
+    const ax = (cmd.vx - prevVx)/dt, ay = (cmd.vy - prevVy)/dt;
+    const aw = (cmd.omega - prevOm)/dt;
+    prevVx = cmd.vx; prevVy = cmd.vy; prevOm = cmd.omega;
+
+    const K = 34, DAMP = 3.4, INERTIA = 0.000020, SWING = 0.000055;
+    pupils.forEach((p, i) => {
+      const side = i === 0 ? -1 : 1;          // port eye, starboard eye
+      // Inertia pushes the pupil against the acceleration. Signs put +vx
+      // (forward, toward +x in body frame) at the TOP of the sprite.
+      let fx = -ay * INERTIA * 1000;
+      let fy =  ax * INERTIA * 1000;
+      // Angular change swings each eye tangentially, and they sit either side
+      // of centre so they swing in opposite senses.
+      fy += aw * SWING * 1000 * side;
+      p.vx += (fx - K*p.x - DAMP*p.vx) * dt;
+      p.vy += (fy - K*p.y - DAMP*p.vy) * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      const m = Math.hypot(p.x, p.y);
+      if (m > 1) { p.x /= m; p.y /= m; p.vx *= .3; p.vy *= .3; }   // hits the rim
+    });
+  }
+
+  /* What to draw in the eight dots.
+
+     `solid` and `off` come straight from the robot's reported pixels — no
+     guessing. The three animated effects keep running on the car long after
+     the reply, so they are reproduced here in the same shape Freenove's driver
+     uses (hue ramp for rainbow, one travelling pixel for chase, a global
+     brightness sine for breathing). It is a mimic, not a mirror: the phases
+     will not be in lockstep with the strip, which is fine for telling at a
+     glance what the lights are doing. */
+  function ledPixels(t) {
+    const b = Math.max(0, Math.min(1, (led.brightness ?? 55) / 255 * 2.2));
+    const dim = c => c.map(v => Math.round(v * b));
+    switch (led.effect) {
+      case "rainbow": {
+        const out = [];
+        for (let i=0;i<8;i++) out.push(dim(hsv((i/8 + t/2600) % 1)));
+        return out;
+      }
+      case "chase": {
+        const head = Math.floor(t/70) % 8;
+        return Array.from({length:8}, (_,i) => {
+          const d = (i - head + 8) % 8;
+          const fade = d === 0 ? 1 : d === 1 ? .45 : d === 2 ? .15 : 0;
+          const base = led.pixels[i] && led.pixels[i].some(Boolean) ? led.pixels[i] : [255,95,162];
+          return dim(base.map(v => v*fade));
+        });
+      }
+      case "breathing": {
+        const k = (Math.sin(t/900) + 1) / 2 * .9 + .1;
+        return Array.from({length:8}, (_,i) => {
+          const base = led.pixels[i] && led.pixels[i].some(Boolean) ? led.pixels[i] : hsv((t/6000)%1);
+          return dim(base.map(v => v*k));
+        });
+      }
+      case "blink":
+        return (Math.floor(t/300) % 2)
+          ? led.pixels.map(dim) : Array(8).fill([0,0,0]);
+      default:                       // solid, off — the robot already told us
+        return led.pixels.map(dim);
+    }
+  }
+  function hsv(h) {                  // h in 0..1, full saturation and value
+    const i = Math.floor(h*6), f = h*6 - i;
+    const q = Math.round(255*(1-f)), s2 = Math.round(255*f);
+    return [[255,s2,0],[q,255,0],[0,255,s2],[0,q,255],[s2,0,255],[255,0,q]][i%6];
+  }
+
+  function roundRect(x,y,w,h,r){
+    ctx.beginPath(); ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);     ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+  }
+
+  function rover(t,k) {
+    const s = Math.max(k, 0.20);   // floor: a readable icon beats an accurate smudge
+    ctx.save(); ctx.scale(s,s);
+
+    // Pool the strip's light under the chassis. Averaging RGB was the obvious
+    // move and the wrong one: the mean of a rainbow is grey, and a grey wash on
+    // a vanilla background reads as a shadow rather than as light. So take the
+    // most saturated lit pixel and composite it ADDITIVELY, which is what light
+    // actually does.
+    {
+      const px = ledPixels(t);
+      let best = null, bestSat = 0;
+      for (const c of px) {
+        const mx = Math.max(...c), mn = Math.min(...c);
+        if (mx < 24) continue;
+        const sat = (mx - mn) + mx*0.35;
+        if (sat > bestSat) { bestSat = sat; best = c; }
+      }
+      if (best) {
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        const [r,g,b] = best;
+        const pool = ctx.createRadialGradient(0,0,0,0,0,CAR.halfLen*1.6);
+        pool.addColorStop(0, `rgba(${r},${g},${b},.30)`);
+        pool.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = pool;
+        ctx.beginPath(); ctx.arc(0,0,CAR.halfLen*1.6,0,7); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    for (const p of puffs) {
+      ctx.globalAlpha = p.a*.5; ctx.fillStyle = "#c9a7f0";
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // wheels — mecanum rollers at 45°, MIRRORED across the diagonal. That X
+    // is what makes the set holonomic, so drawing it truthfully means a
+    // wrongly-mounted wheel would be visible here.
+    for (const sx of [1,-1]) for (const sy of [1,-1]) {
+      ctx.save(); ctx.translate(sx*CAR.wheelX, sy*CAR.wheelY);
+      ctx.fillStyle = "#f3e6f6"; ctx.strokeStyle = "#7a4ec4"; ctx.lineWidth = 2.5;
+      roundRect(-CAR.wheelR,-CAR.wheelW,CAR.wheelR*2,CAR.wheelW*2,6);
+      ctx.fill(); ctx.stroke();
+      ctx.save(); ctx.clip();
+      ctx.strokeStyle = "rgba(122,78,196,.45)"; ctx.lineWidth = 3;
+      const lean = (sx*sy) > 0 ? 1 : -1;
+      for (let i=-4;i<=4;i++){
+        const off = ((i*11)+(spin%11)+55)%55 - 27.5;
+        ctx.beginPath();
+        ctx.moveTo(off-CAR.wheelW,-CAR.wheelW);
+        ctx.lineTo(off+CAR.wheelW*lean, CAR.wheelW);
+        ctx.stroke();
+      }
+      ctx.restore(); ctx.restore();
+    }
+
+    ctx.fillStyle = "#ffb3d1"; ctx.strokeStyle = "#c72f52"; ctx.lineWidth = 3.5;
+    roundRect(-CAR.halfLen,-CAR.halfWid,CAR.halfLen*2,CAR.halfWid*2,16);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    roundRect(-CAR.halfLen+12,-CAR.halfWid+8,CAR.halfLen*2-24,CAR.halfWid-6,10); ctx.fill();
+
+    // The eight WS2812s, showing what the strip is really set to.
+    const px = ledPixels(t);
+    for (let i=0;i<8;i++){
+      // Pixel 0 sits at the front and they run round the deck; which way round
+      // is per-unit (unit.json: led_index_clockwise), so this is the packaged
+      // assumption, not a measured fact.
+      const a = (i/8)*Math.PI*2 - Math.PI/2;
+      const x = Math.cos(a)*34, y = Math.sin(a)*21;
+      const [r,g,bl] = px[i];
+      const lit = r+g+bl > 24;
+      if (lit) {   // each lit pixel throws a little light onto the deck
+        const halo = ctx.createRadialGradient(x,y,0,x,y,13);
+        halo.addColorStop(0, `rgba(${r},${g},${bl},.55)`);
+        halo.addColorStop(1, `rgba(${r},${g},${bl},0)`);
+        ctx.fillStyle = halo;
+        ctx.beginPath(); ctx.arc(x,y,13,0,7); ctx.fill();
+      }
+      ctx.fillStyle = lit ? `rgb(${r},${g},${bl})` : "#e4d2ea";
+      ctx.strokeStyle = "rgba(90,61,78,.35)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, 3.4, 0, 7); ctx.fill(); ctx.stroke();
+    }
+
+    for (const [name,off] of [["left",-22],["middle",0],["right",22]]) {
+      const on = lastLine && lastLine[name];
+      if (on) {
+        ctx.fillStyle = "rgba(199,47,82,.28)";
+        ctx.beginPath(); ctx.arc(66, off, 10 + Math.sin(t/110)*3.5, 0, 7); ctx.fill();
+      }
+      ctx.fillStyle = on ? "#c72f52" : "#d9c3e6";
+      ctx.beginPath(); ctx.arc(66, off, 4.6, 0, 7); ctx.fill();
+    }
+
+    // The head sweeps while a scan runs. Locally animated — the robot does not
+    // stream its servo angle — so it shows THAT a sweep is happening, not the
+    // exact angle at any instant.
+    if (scanning) {
+      scanPan = 90 + Math.sin(t/260) * 60;
+      const bear = (90 - scanPan) * Math.PI/180;
+      ctx.save(); ctx.rotate(-bear);
+      const g = ctx.createLinearGradient(60, 0, 300, 0);
+      g.addColorStop(0, "rgba(224,138,30,.38)");
+      g.addColorStop(1, "rgba(224,138,30,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.moveTo(60, 0);
+      ctx.arc(60, 0, 240, -0.26, 0.26); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+
+    // the face: the ultrasonic pair really are its eyes, so let them be eyes.
+    // Pupils lead the direction of travel — a robot that looks where it is
+    // going reads as alive, and it also shows what you just commanded.
+    const close = lastRange != null && lastRange < 25;
+    const eyeR  = close ? 22 : 19;          // big. googly eyes are meant to be silly.
+    const pupR  = eyeR * 0.46;
+    const reach = eyeR - pupR - 1.5;        // how far the pupil can slide
+    for (const [i, sy] of [[0,-1],[1,1]]) {
+      const ex = 74, ey = sy*30;
+      const p = pupils[i];
+
+      // shell
+      ctx.fillStyle = "#fffdf8";
+      ctx.beginPath(); ctx.ellipse(ex, ey, eyeR, blink>0 ? 2.4 : eyeR, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = "#c72f52"; ctx.lineWidth = 2.5; ctx.stroke();
+
+      if (blink <= 0) {
+        const px = ex + p.x*reach, py = ey + p.y*reach;
+        // the loose pupil, with a soft contact shadow so it reads as sitting
+        // ON the shell rather than printed into it
+        ctx.fillStyle = "rgba(90,61,78,.18)";
+        ctx.beginPath(); ctx.arc(px+1.5, py+2, pupR, 0, 7); ctx.fill();
+        ctx.fillStyle = close ? "#c72f52" : "#3b2430";
+        ctx.beginPath(); ctx.arc(px, py, pupR, 0, 7); ctx.fill();
+        // two highlights — the giveaway that it is a glossy plastic dome
+        ctx.fillStyle = "rgba(255,255,255,.92)";
+        ctx.beginPath(); ctx.arc(px - pupR*.34, py - pupR*.38, pupR*.30, 0, 7); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,.45)";
+        ctx.beginPath(); ctx.arc(px + pupR*.30, py + pupR*.26, pupR*.16, 0, 7); ctx.fill();
+        // and a sheen across the whole shell
+        const sheen = ctx.createLinearGradient(ex-eyeR, ey-eyeR, ex+eyeR*.3, ey+eyeR*.5);
+        sheen.addColorStop(0, "rgba(255,255,255,.65)");
+        sheen.addColorStop(.45, "rgba(255,255,255,0)");
+        ctx.fillStyle = sheen;
+        ctx.beginPath(); ctx.arc(ex, ey, eyeR-1, 0, 7); ctx.fill();
+      }
+    }
+    if (close) {   // cute, and the fastest way to see you are about to hit something
+      ctx.fillStyle = "#a8560a"; ctx.textAlign = "center";
+      ctx.font = 'bold 28px Fredoka, system-ui';
+      ctx.fillText("!", 108, -60 + Math.sin(t/140)*3);
+    }
+
+    const speed = Math.hypot(cmd.vx, cmd.vy);
+    if (speed > 380) {
+      ctx.strokeStyle = `rgba(199,47,82,${Math.min(.6, speed/2600)})`; ctx.lineWidth = 3;
+      const dir = cmd.vx >= 0 ? -1 : 1;
+      for (let i=0;i<3;i++){
+        const y = -28 + i*28, len = 18 + ((t/5 + i*30) % 26);
+        ctx.beginPath();
+        ctx.moveTo(dir*(CAR.halfLen+8), y); ctx.lineTo(dir*(CAR.halfLen+8+len), y); ctx.stroke();
+      }
+    }
+    if (Math.abs(cmd.omega) > 200 && !cmd.vx && !cmd.vy) {
+      ctx.strokeStyle = "rgba(199,47,82,.65)"; ctx.lineWidth = 4;
+      const a0 = t/200 * Math.sign(cmd.omega);
+      ctx.beginPath(); ctx.arc(0,0,CAR.halfLen+18, a0, a0+1.15); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function draw(t) {
+    ctx.clearRect(0,0,W,H);
+    scopeFace(t);
+    const k = pxPerMm();
+
+    // the built-up room: cleared floor first, then hardened obstacles on top
+    {
+      const k = pxPerMm(), size = CELL * k;
+      for (const [ck, c] of cells) {
+        const conf = score(c);
+        if (conf > CLEAR && conf < SOLID) continue;    // undecided, draw nothing
+        const [cx, cy] = ck.split(",").map(Number);
+        const [x, y] = toScreen({ x: cx*CELL + CELL/2, y: cy*CELL + CELL/2 });
+        if (x < -size || y < -size || x > W+size || y > H+size) continue;
+        if (conf >= SOLID) {
+          // An obstacle. Gumdrop: rounded, saturating with confidence, so a
+          // wall you have seen ten times reads harder than a single echo.
+          const a = Math.min(.85, .30 + conf*0.045);
+          ctx.fillStyle = `rgba(122,78,196,${a})`;
+          roundRect(x - size/2, y - size/2, size, size, Math.min(7, size*0.34));
+          ctx.fill();
+          ctx.strokeStyle = `rgba(90,49,150,${Math.min(.7, a+.1)})`;
+          ctx.lineWidth = 1; ctx.stroke();
+        } else {
+          // Known-clear floor, drawn faintly so the explored area reads as a
+          // shape without competing with the obstacles.
+          ctx.fillStyle = "rgba(157,230,200,.22)";
+          ctx.fillRect(x - size/2, y - size/2, size, size);
+        }
+      }
+    }
+
+    for (const m of marks) {
+      const [x,y] = toScreen(m);
+      ctx.globalAlpha = m.a; ctx.fillStyle = "#c72f52";
+      ctx.beginPath(); ctx.arc(x,y,3.6,0,7); ctx.fill();
+    }
+    for (const h of hits) {
+      const [x,y] = toScreen(h);
+      ctx.globalAlpha = h.a; ctx.fillStyle = "#e08a1e";
+      ctx.beginPath(); ctx.arc(x,y,3,0,7); ctx.fill();
+      ctx.globalAlpha = h.a*.3;
+      ctx.beginPath(); ctx.arc(x,y,7,0,7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    if (trail.length > 1) {
+      ctx.strokeStyle = "#c72f52"; ctx.lineWidth = 4;
+      ctx.lineJoin = ctx.lineCap = "round";
+      ctx.shadowColor = "rgba(199,47,82,.22)"; ctx.shadowBlur = 6;
+      ctx.beginPath();
+      trail.forEach((p,i) => { const [x,y] = toScreen(p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+      ctx.stroke(); ctx.shadowBlur = 0;
+    }
+
+    ctx.save(); ctx.translate(W/2,H/2); ctx.rotate(-pose.th);
+    if (lastRange != null) {
+      const r = lastRange*10*k, half = 15*Math.PI/180;
+      ctx.fillStyle = lastRange < 25 ? "rgba(199,47,82,.16)" : "rgba(255,196,107,.28)";
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,r,-half,half); ctx.closePath(); ctx.fill();
+      for (const p of pings) {
+        ctx.strokeStyle = `rgba(224,138,30,${p.a})`; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(0,0,p.r*k,-half,half); ctx.stroke();
+      }
+    }
+    rover(t,k);
+    ctx.restore();
+  }
+
+  function tickAnim(dt) {
+    spin += (cmd.vx + Math.abs(cmd.vy) + Math.abs(cmd.omega))*dt*0.05;
+    tickPupils(dt);
+    nextBlink -= dt*1000;
+    if (blink > 0) blink -= dt*1000;
+    else if (nextBlink <= 0) { blink = 140; nextBlink = 2600 + Math.random()*4200; }
+    for (let i=pings.length-1;i>=0;i--){ const p=pings[i]; p.r+=dt*950; p.a-=dt*.55; if(p.a<=0) pings.splice(i,1); }
+    const sp = Math.hypot(cmd.vx, cmd.vy);
+    if (sp > 300 && Math.random() < dt*20) {
+      puffs.push({ x:(cmd.vx>=0?-1:1)*CAR.wheelX, y:(Math.random()*2-1)*CAR.wheelY,
+                   r:3+Math.random()*4, a:.7 });
+    }
+    for (let i=puffs.length-1;i>=0;i--){ const p=puffs[i]; p.r+=dt*26; p.a-=dt*1.5; if(p.a<=0) puffs.splice(i,1); }
+  }
+
+  let prev = performance.now();
+  function frame(now) {
+    const dt = Math.min((now-prev)/1000, .1); prev = now;
+    integrate(now); tickAnim(dt); draw(now); paint();
+    requestAnimationFrame(frame);
+  }
+
+  /* ── readouts ─────────────────────────────────────────────────────── */
+  function paint() {
+    let deg = (pose.th*180/Math.PI)%360; if (deg>180) deg-=360; if (deg<-180) deg+=360;
+    el("ph").textContent = (deg<0?"":"+") + deg.toFixed(0) + "°";
+    el("plen").innerHTML = Math.round(pathLen) + "<small>mm</small>";
+    let obs = 0;
+    for (const c of cells.values()) if (score(c) >= SOLID) obs++;
+    el("mapped").innerHTML = cells.size + "<small> cells · " + obs + " solid</small>";
+    el("scaleTxt").textContent = "±" + (W/2/pxPerMm()/1000).toFixed(1) + " m";
+    for (const [id,v] of [["cvx",cmd.vx],["cvy",cmd.vy],["com",cmd.omega]]) {
+      const e = el(id); e.textContent = v;
+      e.parentElement.classList.toggle("live", v !== 0);
+    }
+  }
+  function showBattery(v) {
+    const e = el("batt");
+    if (v == null) { e.textContent = "no ADC"; e.className = "val"; return; }
+    e.innerHTML = v.toFixed(2) + "<small>V</small>";
+    e.className = "val " + (v<6.8?"bad":v<7.2?"warn":"ok");   // 2S: 8.4 full, ~6.4 empty
+  }
+  function showRange(cm) {
+    if (cm != null) pings.push({r:0,a:.65});   // a ring per reading, so the
+    lastRange = cm;                             // 3 s cadence is visible
+    const e = el("rng");
+    if (cm == null) { e.textContent = "—"; e.className = "val"; return; }
+    e.innerHTML = cm.toFixed(0) + "<small>cm</small>";
+    e.className = "val " + (cm<20?"bad":cm<40?"warn":"ok");
+    if (cm != null && cm > 2) {
+      const far = cm >= 290;   // at max range nothing was found — the ray is
+                               // all free space, with no obstacle to record
+      const d = Math.min(cm, 290) * 10;
+      const ex = pose.x + d*Math.cos(pose.th), ey = pose.y + d*Math.sin(pose.th);
+      observeRay(pose.x, pose.y, ex, ey, !far);
+      if (!far) {
+        hits.push({ x: ex, y: ey, a: 1 });
+        if (hits.length > MAX_HITS) hits.shift();
+        for (const h of hits) h.a = Math.max(.15, h.a*.985);
+      }
+    }
+  }
+  function showLine(line) {
+    lastLine = line;
+    const note = el("irNote");
+    if (!line) { note.textContent = "not reported"; return; }
+    let any = false;
+    for (const [id,key] of [["irL","left"],["irM","middle"],["irR","right"]]) {
+      const on = !!line[key]; el(id).classList.toggle("on", on); any = any || on;
+    }
+    note.textContent = any ? "dark under " + Object.keys(line).filter(k=>line[k]).join(", ")
+                           : "all clear — light surface";
+    if (any) {
+      // The line array looks straight DOWN, so a detection is about the floor
+      // the rover is standing on, not about anything ahead. It gets its own
+      // layer rather than the occupancy grid — tape is not an obstacle.
+      marks.push({x:pose.x, y:pose.y, a:1});
+      if (marks.length > MAX_MARKS) marks.shift();
+      for (const m of marks) m.a = Math.max(.2, m.a*.99);
+    } else {
+      // Driving over clear floor is itself evidence the cell is passable.
+      bump(toCell(pose.x), toCell(pose.y), "miss");
+    }
+  }
+  const LIGHT_FULL = 5.2;   // PCB v2 scaling; bright light reads HIGH
+  function showLight(light) {
+    const note = el("ltNote");
+    if (!light) {
+      el("ltL").textContent = el("ltR").textContent = "no ADC";
+      el("ltLb").style.width = el("ltRb").style.width = "0%";
+      note.textContent = ""; return;
+    }
+    for (const [v,bar,num] of [[light.left,"ltLb","ltL"],[light.right,"ltRb","ltR"]]) {
+      el(num).textContent = v.toFixed(2)+"V";
+      el(bar).style.width = Math.max(0,Math.min(100, v/LIGHT_FULL*100)) + "%";
+    }
+    const d = light.left - light.right;
+    note.textContent = Math.abs(d) < .15 ? "balanced"
+      : (d>0 ? "brighter to port" : "brighter to starboard") + ` · ${Math.abs(d).toFixed(2)}V`;
+  }
+  let noteMsg = "", hostMsg = "";
+  function refreshNote() { el("leaseNote").textContent = [noteMsg, hostMsg].filter(Boolean).join("  ·  "); }
+  function showHost(h) {
+    if (!h) return;
+    // throttled matters more than temperature here: this car has browned out
+    // twice on a tired pack, and both times it looked like a dead SD card.
+    const q = h.throttled;
+    let txt = h.cpu_temp_c != null ? h.cpu_temp_c.toFixed(0) + "°C" : "";
+    if (q && (q.undervolt_now || q.throttled_now)) txt += " · UNDER-VOLT";
+    else if (q && q.undervolt_since_boot) txt += " · brownout earlier";
+    hostMsg = txt; refreshNote();
+  }
+  function setLink(live, txt) {
+    el("linkDot").classList.toggle("live", !!live);
+    el("linkTxt").textContent = txt;
+  }
+
+  /* ── lights ───────────────────────────────────────────────────────────
+     Sent over the control socket: a browser can reach the robot only through
+     this socket or MCP, and MCP needs a session handshake — absurd for a
+     colour button. Brightness defaults to Freenove's own cap of 55.       */
+  const LED_PRESETS = [
+    {id:"off",   label:"Off",   chip:"#2a1f72", msg:{effect:"off"}},
+    {id:"red",   label:"Red",   chip:"#ff4d6d", msg:{effect:"solid",r:255,g:0,b:0}},
+    {id:"green", label:"Green", chip:"#4ef5a7", msg:{effect:"solid",r:0,g:255,b:0}},
+    {id:"blue",  label:"Blue",  chip:"#4d8dff", msg:{effect:"solid",r:0,g:0,b:255}},
+    {id:"white", label:"White", chip:"#fff4e6", msg:{effect:"solid",r:255,g:255,b:255}},
+    {id:"amber", label:"Amber", chip:"#ffb03b", msg:{effect:"solid",r:255,g:130,b:0}},
+    {id:"party", label:"Party", chip:"linear-gradient(90deg,#ff4d6d,#ffb03b,#4ef5a7,#4d8dff,#c46dff)",
+      msg:{effect:"rainbow",wait_ms:25}},
+    {id:"chase", label:"Chase", chip:"linear-gradient(90deg,#ff5fa2,#241a78)", msg:{effect:"chase",wait_ms:70}},
+    {id:"breathe",label:"Breathe",chip:"linear-gradient(90deg,#241a78,#8ab4ff,#241a78)", msg:{effect:"breathing",wait_ms:18}},
+  ];
+  let ledActive = null;
+  function sendLed(p) {
+    if (!control || control.readyState !== 1) { el("ledNote").textContent = "not connected"; return; }
+    control.send(JSON.stringify({ type:"led", brightness:+el("bright").value, ...p.msg }));
+    ledActive = p.id;
+    for (const b of document.querySelectorAll(".led")) b.classList.toggle("on", b.dataset.id === p.id);
+  }
+  (function buildLeds(){
+    const wrap = el("leds");
+    for (const p of LED_PRESETS) {
+      const b = document.createElement("button");
+      b.className = "led"; b.dataset.id = p.id;
+      b.innerHTML = `<span class="chip" style="background:${p.chip}"></span>${p.label}`;
+      b.addEventListener("click", () => sendLed(p));
+      wrap.appendChild(b);
+    }
+    el("bright").addEventListener("input", () => {
+      el("brightV").textContent = el("bright").value;
+      const p = LED_PRESETS.find(x => x.id === ledActive);
+      if (p) sendLed(p);   // apply live rather than at the next colour change
+    });
+  })();
+
+  /* ── driving ──────────────────────────────────────────────────────── */
+  const held = new Set();
+  const KEYS = { w:"fwd", s:"back", a:"left", d:"right", q:"ccw", e:"cw",
+                 arrowup:"fwd", arrowdown:"back", arrowleft:"left", arrowright:"right" };
+  let padVec = null;    // thumbpad output; overrides the keys while dragging
+
+  function recompute() {
+    const d = cal.duty;
+    if (padVec) { cmd.vx = padVec.vx; cmd.vy = padVec.vy; }
+    else {
+      cmd.vx = (held.has("fwd")?d:0)  - (held.has("back")?d:0);
+      cmd.vy = (held.has("left")?d:0) - (held.has("right")?d:0);
+    }
+    cmd.omega = (held.has("ccw")?d:0) - (held.has("cw")?d:0);
+  }
+  function send() {
+    if (!control || control.readyState !== 1) return;
+    control.send(JSON.stringify({ type:"drive", ...cmd }));
+  }
+  function stop() {
+    held.clear(); padVec = null; recompute();
+    el("knob").style.transform = "translate(-50%,-50%)";
+    if (control && control.readyState === 1) control.send(JSON.stringify({type:"stop"}));
+  }
+
+  addEventListener("keydown", e => {
+    if (e.repeat) return;
+    if (e.key === " ") { e.preventDefault(); stop(); return; }
+    const k = KEYS[e.key.toLowerCase()]; if (!k) return;
+    e.preventDefault(); held.add(k); recompute(); send();
+  });
+  addEventListener("keyup", e => {
+    const k = KEYS[e.key.toLowerCase()]; if (!k) return;
+    held.delete(k); recompute(); send();
+  });
+  addEventListener("blur", stop);   // losing focus must not keep driving
+
+  // Thumbpad. Pointer events cover mouse, touch and stylus in one path, and
+  // setPointerCapture means a thumb sliding off the pad still ends the drag
+  // here rather than leaving the car running.
+  const pad = el("pad"), knob = el("knob");
+  function padMove(ev) {
+    const b = pad.getBoundingClientRect();
+    const cx = b.left + b.width/2, cy = b.top + b.height/2, rad = b.width/2;
+    let dx = (ev.clientX-cx)/rad, dy = (ev.clientY-cy)/rad;
+    const m = Math.hypot(dx,dy);
+    if (m > 1) { dx /= m; dy /= m; }
+    const mag = Math.hypot(dx,dy), dead = 0.14;   // a thumb is never centred
+    if (mag < dead) padVec = { vx:0, vy:0 };
+    else {
+      const scale = (mag - dead)/(1 - dead)/mag;
+      padVec = { vx: Math.round(-dy*scale*cal.duty),    // up = forward
+                 vy: Math.round(-dx*scale*cal.duty) };  // left on screen = +vy
+    }
+    knob.style.transform = `translate(calc(-50% + ${dx*rad*.58}px), calc(-50% + ${dy*rad*.58}px))`;
+    recompute(); send();
+  }
+  pad.addEventListener("pointerdown", e => { pad.setPointerCapture(e.pointerId); padMove(e); });
+  pad.addEventListener("pointermove", e => { if (pad.hasPointerCapture(e.pointerId)) padMove(e); });
+  for (const evt of ["pointerup","pointercancel"]) {
+    pad.addEventListener(evt, () => {
+      padVec = null; knob.style.transform = "translate(-50%,-50%)"; recompute(); send();
+    });
+  }
+  for (const [id,dir] of [["spinL","ccw"],["spinR","cw"]]) {
+    const b = el(id);
+    const on  = e => { e.preventDefault(); held.add(dir); recompute(); send(); };
+    const off = () => { held.delete(dir); recompute(); send(); };
+    b.addEventListener("pointerdown", on);
+    for (const evt of ["pointerup","pointercancel","pointerleave"]) b.addEventListener(evt, off);
+  }
+  el("estop").addEventListener("click", stop);
+  el("forget").addEventListener("click", () => { cells.clear(); hits.length = marks.length = 0; });
+  el("clear").addEventListener("click", () => {
+    trail.length = 0; trail.push({x:pose.x,y:pose.y});
+    hits.length = marks.length = 0; pathLen = 0;
+  });
+  el("reset").addEventListener("click", () => {
+    pose.x = pose.y = pose.th = 0; pathLen = 0;
+    trail.length = 0; trail.push({x:0,y:0}); hits.length = marks.length = 0;
+    // Recentring moves the origin, so every cell's coordinates become lies.
+    cells.clear();
+  });
+
+  // Absolute state, re-sent while anything is held: the server's deadman is
+  // armed by every drive message, so silence stops the car. That is what makes
+  // a dropped link safe instead of a runaway.
+  setInterval(() => { if (cmd.vx || cmd.vy || cmd.omega) send(); }, HEARTBEAT_MS);
+
+  /* ── look around ──────────────────────────────────────────────────────
+     The head carries the ultrasonic, so panning it sweeps the sonar. Each
+     sample is a ray at a known bearing, which is exactly what the occupancy
+     grid wants — one sweep fills in an arc that driving forward never would.
+
+     Bearing maths: pan 90 is straight ahead and HIGHER pan is to the RIGHT
+     (AGENTS.md sec. 2), and the world frame is anticlockwise-positive. So a
+     sample at pan p sits at heading + (90 - p) degrees. Getting this backwards
+     would mirror the whole map, so it is worth stating rather than deriving
+     at the call site. */
+  let scanning = false, scanPan = 90;
+
+  function requestScan() {
+    if (!control || control.readyState !== 1) { noteMsg = "not connected"; refreshNote(); return; }
+    if (scanning) return;
+    scanning = true;
+    stop();                                  // belt and braces; the robot also stops
+    const b = el("scan"); b.disabled = true; b.textContent = "Looking…";
+    control.send(JSON.stringify({ type: "scan", from: 30, to: 150, step: 15 }));
+    // The robot recentres and replies; if it never does, give the button back
+    // rather than leaving it stuck.
+    setTimeout(() => { if (scanning) endScan(); }, 20000);
+  }
+  function endScan() {
+    scanning = false; scanPan = 90;
+    const b = el("scan"); b.disabled = false; b.textContent = "Look around";
+  }
+
+  function applyScan(samples) {
+    // Snapshot the pose once: the whole sweep happened at one standstill, so
+    // every ray must share an origin. Reading pose per-sample would let any
+    // drift during the sweep fan the returns out.
+    const ox = pose.x, oy = pose.y, oth = pose.th;
+    let marked = 0;
+    for (const [panStr, cm] of Object.entries(samples)) {
+      if (cm == null) continue;
+      const bearing = oth + (90 - Number(panStr)) * Math.PI/180;
+      const far = cm >= 290;
+      const d = Math.min(cm, 290) * 10;
+      const ex = ox + d*Math.cos(bearing), ey = oy + d*Math.sin(bearing);
+      observeRay(ox, oy, ex, ey, !far);
+      if (!far) {
+        hits.push({ x: ex, y: ey, a: 1 });
+        if (hits.length > MAX_HITS) hits.shift();
+        marked++;
+      }
+    }
+    noteMsg = `swept ${Object.keys(samples).length} bearings, ${marked} returns`;
+    refreshNote();
+  }
+  el("scan").addEventListener("click", requestScan);
+
+  /* ── reservation ──────────────────────────────────────────────────── */
+  let lease = null, leaseTimer = null;
+  async function reserve() {
+    const btn = el("reserve");
+    btn.disabled = true; btn.textContent = "Taking control…";
+    try {
+      const res = await fetch(base + "/lease/reserve", { method:"POST" });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        noteMsg = body?.detail || "could not take control"; refreshNote();
+        el("lease").textContent = "busy";
+        btn.hidden = false; btn.disabled = false; btn.textContent = "Try again";
+        return false;
+      }
+      lease = { token: body.token, exp: body.exp };
+      btn.hidden = true; el("release").hidden = false;
+      noteMsg = ""; refreshNote(); startLeaseClock();
+      return true;
+    } catch {
+      noteMsg = "gateway unreachable"; refreshNote();
+      btn.hidden = false; btn.disabled = false; btn.textContent = "Try again";
+      return false;
+    }
+  }
+  function startLeaseClock() {
+    clearInterval(leaseTimer);
+    leaseTimer = setInterval(() => {
+      if (!lease) return;
+      const left = lease.exp - Math.floor(Date.now()/1000);
+      if (left <= 0) {
+        clearInterval(leaseTimer); el("lease").textContent = "—";
+        reserve().then(ok => { if (ok) connect(); });   // a console that goes
+        return;                                         // blank after 5 min
+      }                                                 // is useless
+      el("lease").textContent = Math.floor(left/60) + ":" + String(left%60).padStart(2,"0");
+    }, 1000);
+  }
+  async function release(beacon) {
+    if (!lease) return;
+    const body = JSON.stringify({ token: lease.token }), url = base + "/lease/release";
+    lease = null; clearInterval(leaseTimer);
+    if (beacon && navigator.sendBeacon) {
+      // On unload a normal fetch is killed mid-flight; sendBeacon is the only
+      // delivery the browser guarantees, so an abandoned tab stops holding the
+      // robot for the rest of its five minutes.
+      navigator.sendBeacon(url, new Blob([body], {type:"application/json"}));
+      return;
+    }
+    try { await fetch(url, { method:"POST", keepalive:true,
+      headers:{"content-type":"application/json"}, body }); } catch {}
+  }
+  el("reserve").addEventListener("click", async () => { if (await reserve()) connect(); });
+  el("release").addEventListener("click", async () => {
+    stop(); if (control) control.close(); await release(false);
+    el("lease").textContent = "—"; el("release").hidden = true;
+    el("reserve").hidden = false; el("reserve").disabled = false;
+    el("reserve").textContent = "Take control — 5 min";
+    setLink(false, "released");
+  });
+  addEventListener("pagehide", () => { stop(); release(true); });
+
+  /* ── socket ───────────────────────────────────────────────────────── */
+  function activeToken() { return token || (lease && lease.token) || null; }
+  function connect() {
+    setLink(false, "connecting");
+    const t = activeToken();
+    const ws = new WebSocket(`${wsRoot}/ws/control${t ? "?token="+encodeURIComponent(t) : ""}`);
+    control = ws;
+    ws.onopen = () => { retry = 500; setLink(true, "live"); };
+    ws.onmessage = ev => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === "hello") {
+        if (m.battery_v !== undefined) showBattery(m.battery_v);
+        if (m.deadman_ms) el("deadman").textContent = m.deadman_ms + " ms";
+        if (m.max_duty) {
+          const s = el("sDuty"); s.max = m.max_duty;
+          if (+s.value > m.max_duty) { s.value = m.max_duty; cal.duty = m.max_duty; el("sDutyV").textContent = s.value; }
+        }
+        if (m.controller === false) setLink(true, "watching — someone else drives");
+      } else if (m.type === "telemetry") {
+        if (m.battery_v !== undefined)   showBattery(m.battery_v);
+        if (m.distance_cm !== undefined) showRange(m.distance_cm);
+        if (m.line !== undefined)  showLine(m.line);
+        if (m.light !== undefined) showLight(m.light);
+        if (m.host !== undefined)  showHost(m.host);
+      } else if (m.type === "scan") {
+        applyScan(m.samples || {});
+        endScan();
+      } else if (m.type === "led") {
+        led = { effect: m.effect || "off",
+                brightness: m.brightness ?? led.brightness,
+                pixels: Array.isArray(m.pixels) && m.pixels.length ? m.pixels : led.pixels };
+        el("ledNote").textContent = "strip: " + led.effect;
+      } else if (m.type === "error") {
+        if (/scan/i.test(m.detail || "")) { noteMsg = m.detail; refreshNote(); endScan(); return; }
+        if (/led/i.test(m.detail || "")) { el("ledNote").textContent = m.detail; return; }
+        setLink(true, m.detail || "error");
+      }
+    };
+    ws.onclose = ev => {
+      control = null; setLink(false, ev.reason || "disconnected");
+      if (ev.code === 1008) {          // policy: bad credential, or held elsewhere
+        noteMsg = ev.reason || "refused"; refreshNote();
+        if (!token && !lease) reserve().then(ok => { if (ok) connect(); });
+        else { el("reserve").hidden = false; el("reserve").disabled = false;
+               el("reserve").textContent = "Take control — 5 min"; }
+        return;
+      }
+      setTimeout(connect, retry); retry = Math.min(retry*2, 8000);
+    };
+    ws.onerror = () => {};
+  }
+  setInterval(() => {
+    if (control && control.readyState === 1) control.send(JSON.stringify({type:"ping", t:Date.now()}));
+  }, PING_MS);
+
+  // Read-only probe so the thumbpad geometry can be checked without a socket,
+  // and therefore without moving anything. Deliberately a copy: writing to it
+  // does nothing.
+  window.__probe = () => ({ ...cmd, padActive: !!padVec, connected: !!control });
+
+  /* Test hooks. Both are DISPLAY-ONLY by construction: __feed runs the same
+     handlers a telemetry frame would, and __place moves the local pose
+     estimate. Neither touches `cmd` or the socket, so neither can command the
+     robot — which is what makes it safe to exercise the mapping without a car
+     on the floor. */
+  window.__feed = m => {
+    if (m.distance_cm !== undefined) showRange(m.distance_cm);
+    if (m.line !== undefined)  showLine(m.line);
+    if (m.light !== undefined) showLight(m.light);
+    if (m.battery_v !== undefined) showBattery(m.battery_v);
+  };
+  window.__place = (x, y, thDeg) => {
+    pose.x = x; pose.y = y; pose.th = thDeg * Math.PI/180;
+    trail.push({x, y});
+  };
+  window.__mapStats = () => {
+    let solid = 0, clear = 0;
+    for (const c of cells.values()) {
+      const k = score(c);
+      if (k >= SOLID) solid++; else if (k <= CLEAR) clear++;
+    }
+    return { cells: cells.size, solid, clear };
+  };
+
+  resize(); requestAnimationFrame(frame);
+
+  function dismissGate() { el("gate").classList.add("gone"); }
+  el("gateGo").addEventListener("click", async () => {
+    dismissGate();
+    if (token) { el("lease").textContent = "∞"; connect(); }
+    else if (await reserve()) connect();
+  });
+  el("gateWatch").addEventListener("click", () => {
+    // Look without taking the robot. The socket needs a lease, so there is no
+    // telemetry in this mode — the scope just sits there. Said plainly rather
+    // than leaving someone waiting for numbers that will never arrive.
+    dismissGate();
+    setLink(false, "watching — no telemetry until you take the controls");
+    noteMsg = "not connected"; refreshNote();
+    el("reserve").hidden = false; el("reserve").disabled = false;
+    el("reserve").textContent = "Take the controls";
+  });
+  // An operator arriving with their own token skips the gate entirely.
+  if (token) { el("gate").classList.add("gone"); el("lease").textContent = "∞"; connect(); }
+})();
+</script>
+</body>
+</html>

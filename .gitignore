@@ -22,3 +22,7 @@ mcp-tokens.txt
 # Generated robot descriptors (source of truth is each plugin's metadata(); these bake
 # in a deployment-specific ngrok domain — regenerate with scripts/export_descriptor.py)
 robot-descriptors/
+
+# Runtime logs from the launchd agents (com.yakrobot.gateway / .tunnel)
+/logs/
+.DS_Store

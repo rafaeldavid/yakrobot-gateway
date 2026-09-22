@@ -25,10 +25,15 @@ from core.plugin import RobotPlugin
 logger = logging.getLogger(__name__)
 
 CONSOLE_HTML = Path(__file__).resolve().parent / "static" / "console.html"
+TRACE_HTML = Path(__file__).resolve().parent / "static" / "console_trace.html"
 
 
 def register_console(app: FastAPI, plugins: dict[str, RobotPlugin]) -> None:
-    """Add ``GET /{robot}/ui``.
+    """Add ``GET /{robot}/ui`` and ``GET /{robot}/ui2``.
+
+    ``/ui2`` is the camera-less console: it draws a dead-reckoned path and the
+    sensor state instead of a video feed. Built for a car whose camera ribbon
+    has failed, but useful on any robot with no camera at all.
 
     **Must be called before the per-robot MCP apps are mounted**, for the same
     reason as the WebSocket proxy: ``app.mount("/{name}")`` claims everything
@@ -39,7 +44,21 @@ def register_console(app: FastAPI, plugins: dict[str, RobotPlugin]) -> None:
         logger.info("console: no plugin exposes a control server; /ui not served")
         return
     for name in sorted(drivable):
-        logger.info("console: /%s/ui", name)
+        logger.info("console: /%s/ui  /%s/ui2", name, name)
+
+    @app.get("/{robot}/ui2")
+    async def robot_trace_console(robot: str):
+        """Trace console — same socket, same auth, no video.
+
+        Registered BEFORE /{robot}/ui purely for readability; both are plain
+        routes and order between them does not matter. What does matter is that
+        register_console() runs before the MCP apps are mounted (see above).
+        """
+        if robot not in drivable:
+            raise HTTPException(status_code=404, detail=f"no console for {robot!r}")
+        return FileResponse(
+            TRACE_HTML, media_type="text/html", headers={"Cache-Control": "no-cache"}
+        )
 
     @app.get("/{robot}/ui")
     async def robot_console(robot: str):
