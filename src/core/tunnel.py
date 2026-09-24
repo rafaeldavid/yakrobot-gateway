@@ -77,7 +77,8 @@ def _start_cloudflare(port: int) -> str:
         if not domain:
             raise RuntimeError(
                 "CLOUDFLARE_DOMAIN not set — the public hostname mapped to this tunnel in "
-                f"the Cloudflare dashboard (its ingress must point at http://localhost:{port})"
+                f"the Cloudflare dashboard (its ingress must point at http://127.0.0.1:{port} "
+                f"— not localhost, see _start_cloudflare below)"
             )
         proc = subprocess.Popen(
             ["cloudflared", "tunnel", "run", "--token", token],
@@ -88,8 +89,15 @@ def _start_cloudflare(port: int) -> str:
         return f"https://{domain}"
 
     # Quick tunnel — no account; cloudflared prints an ephemeral URL to stderr.
+    #
+    # 127.0.0.1, not localhost: on macOS (and any dual-stack host whose resolver
+    # prefers IPv6) `localhost` resolves to ::1 first, while uvicorn's default
+    # --host binds IPv4 only. cloudflared then dials a dead address and the edge
+    # answers 404 with the request never reaching the gateway — a failure that
+    # looks like a broken tunnel rather than a wrong origin, because cloudflared
+    # still reports "Registered tunnel connection" and looks entirely healthy.
     proc = subprocess.Popen(
-        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+        ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,

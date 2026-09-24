@@ -15,13 +15,19 @@ gateway mounts each robot at `/{plugin_name}/mcp` — a mismatch would make the
 exported descriptor advertise an endpoint that 404s.
 """
 
+import os
 from core.plugin import RobotPlugin, RobotMetadata
 
 
 class PicarFreenovePlugin(RobotPlugin):
     def metadata(self) -> RobotMetadata:
         return RobotMetadata(
-            name="PiCar-Finland-01",
+            # Every operator's car is a different physical robot in a different
+            # place, and this name is what goes on-chain at registration. Left
+            # hardcoded, the only ways to register your own car are to publish
+            # the reference car's name or to fork the plugin. The default keeps
+            # existing deployments byte-identical.
+            name=os.getenv("PICAR_FREENOVE_NAME", "PiCar-Finland-01"),
             description=(
                 "A Freenove 4WD Smart Car on a Raspberry Pi: drive and strafe, "
                 "pan/tilt camera with snapshots, ultrasonic distance and sweep, "
