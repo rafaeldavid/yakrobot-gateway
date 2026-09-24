@@ -257,6 +257,7 @@ input[type=range]{flex:1;accent-color:var(--taffy-ink);min-width:0}
       <li>You get <b>five minutes</b>, then someone else can take a turn. Hand it
           back early with the button in the corner.</li>
     </ul>
+    <p class="gentle" id="gatePrice" hidden></p>
     <p class="gentle">Be kind to it — it is somebody's actual robot.</p>
     <button class="candy wide" id="gateGo">Take the controls</button>
     <button class="candy wide ghost" id="gateWatch" style="margin-top:9px">Just look around</button>
@@ -378,7 +379,16 @@ input[type=range]{flex:1;accent-color:var(--taffy-ink);min-width:0}
      credential always rides in the query string.                          */
   const base   = location.pathname.replace(/\/ui2\/?$/, "");
   const wsRoot = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base;
-  const token  = new URLSearchParams(location.search).get("token");
+  // Three ways a credential arrives, in precedence order:
+  //   ?token=      the operator's static token (no lease, no expiry)
+  //   #token=      a paid card credential, handed back by /stripe/confirm.
+  //                A fragment, deliberately: it never reaches the server or
+  //                its logs. Stripped from the address bar once read.
+  //   POST /lease/reserve   a free turn, when the gateway allows them
+  const hashToken = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (hashToken) history.replaceState(null, "", location.pathname + location.search);
+  const token = new URLSearchParams(location.search).get("token") || hashToken;
+  const paidCredential = !!hashToken;
   const el = id => document.getElementById(id);
   el("robotName").textContent = (base.replace(/^\//, "") || "picar").toUpperCase();
 
@@ -1145,6 +1155,20 @@ input[type=range]{flex:1;accent-color:var(--taffy-ink);min-width:0}
   // a dropped link safe instead of a runaway.
   setInterval(() => { if (cmd.vx || cmd.vy || cmd.omega) send(); }, HEARTBEAT_MS);
 
+  /* ── what this gateway sells ─────────────────────────────────────────
+     The console cannot know from its own URL whether teleop is free, card-paid
+     or x402-paid — that is per-deployment config — so it asks. Fetched once, at
+     the gate, because getting it wrong means offering a button that cannot
+     work. */
+  let gatewayInfo = null;
+  async function loadGatewayInfo() {
+    try {
+      const r = await fetch("/", { headers: { accept: "application/json" } });
+      gatewayInfo = await r.json();
+    } catch { gatewayInfo = null; }
+    return gatewayInfo;
+  }
+
   /* ── look around ──────────────────────────────────────────────────────
      The head carries the ultrasonic, so panning it sweeps the sonar. Each
      sample is a ray at a known bearing, which is exactly what the occupancy
@@ -1345,10 +1369,38 @@ input[type=range]{flex:1;accent-color:var(--taffy-ink);min-width:0}
   resize(); requestAnimationFrame(frame);
 
   function dismissGate() { el("gate").classList.add("gone"); }
+
+  async function prepareGate() {
+    // A static token or a freshly-bought credential skips the gate entirely —
+    // the operator already has a key, the buyer has already paid.
+    if (token) { dismissGate(); el("lease").textContent = paidCredential ? "paid" : "∞"; connect(); return; }
+
+    const info = await loadGatewayInfo();
+    const stripe = info && info.stripe && info.stripe.enabled ? info.stripe : null;
+    const free = !info || info.teleop?.reservation !== "paid";
+
+    if (stripe && !free) {
+      const price = (stripe.price_cents / 100).toFixed(2);
+      const cur = (stripe.currency || "usd").toUpperCase();
+      el("gateGo").textContent = `Pay ${cur === "USD" ? "$" : ""}${price} for ${stripe.lease_minutes} min`;
+      el("gateGo").dataset.mode = "stripe";
+      el("gatePrice").hidden = false;
+      el("gatePrice").textContent =
+        `Card payment — ${cur === "USD" ? "$" : ""}${price} buys ${stripe.lease_minutes} minutes at the controls.`;
+    } else {
+      el("gateGo").textContent = "Take the controls";
+      el("gateGo").dataset.mode = "free";
+    }
+  }
   el("gateGo").addEventListener("click", async () => {
+    if (el("gateGo").dataset.mode === "stripe") {
+      // Full page navigation, not fetch: the buyer has to land on the payment
+      // page itself, and /stripe/start answers with a redirect to it.
+      location.href = base + "/stripe/start";
+      return;
+    }
     dismissGate();
-    if (token) { el("lease").textContent = "∞"; connect(); }
-    else if (await reserve()) connect();
+    if (await reserve()) connect();
   });
   el("gateWatch").addEventListener("click", () => {
     // Look without taking the robot. The socket needs a lease, so there is no
@@ -1360,8 +1412,7 @@ input[type=range]{flex:1;accent-color:var(--taffy-ink);min-width:0}
     el("reserve").hidden = false; el("reserve").disabled = false;
     el("reserve").textContent = "Take the controls";
   });
-  // An operator arriving with their own token skips the gate entirely.
-  if (token) { el("gate").classList.add("gone"); el("lease").textContent = "∞"; connect(); }
+  prepareGate();
 })();
 </script>
 </body>
